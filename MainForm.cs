@@ -15,25 +15,20 @@ namespace usb_bulk_2
         private CyBulkEndPoint inEndpoint;
         private Timer deviceCheckTimer;
 
-        private System.Diagnostics.Stopwatch transferStopwatch = new System.Diagnostics.Stopwatch();
-        private long lastSendTime = 0;
-        private long lastResponseTime = 0;
+        // Daha hassas ölçüm için double kullanıyoruz
+        private double lastSendTime = 0;
+        private double lastResponseTime = 0;
+
         // USB VID/PID
         private const int USB_VID = 0x04B4;  // Cypress VID
-        private const int USB_PID = 0xF0;  // PSoC için seçtiğiniz PID
+        private const int USB_PID = 0x00F0;  // PSoC için seçtiğiniz PID
 
         public MainForm()
         {
             InitializeComponent();
-
-            // Form yükleme işlemi
             this.Load += MainForm_Load;
             this.FormClosing += MainForm_FormClosing;
-
-            // Kontrolleri düzenle
             SetupControls();
-
-            // USB cihazları izleme
             SetupUsbMonitoring();
         }
 
@@ -47,9 +42,7 @@ namespace usb_bulk_2
             cmbCommands.Items.Add(new CommandItem("String Echo", UsbPacket.CMD_ECHO_STRING));
             cmbCommands.SelectedIndex = 0;
 
-
             btnSend.Click += BtnSend_Click;
-
             txtLog.Font = new Font("Consolas", 9F);
             txtLog.ReadOnly = true;
         }
@@ -57,12 +50,10 @@ namespace usb_bulk_2
         private void SetupUsbMonitoring()
         {
             usbDevices = new USBDeviceList(CyConst.DEVICES_CYUSB);
+            usbDevices.DeviceAttached += USBDeviceAttached;
+            usbDevices.DeviceRemoved += USBDeviceRemoved;
 
-            usbDevices.DeviceAttached += new EventHandler(USBDeviceAttached);
-            usbDevices.DeviceRemoved += new EventHandler(USBDeviceRemoved);
-
-            deviceCheckTimer = new Timer();
-            deviceCheckTimer.Interval = 2000; // 2 saniye
+            deviceCheckTimer = new Timer { Interval = 2000 };
             deviceCheckTimer.Tick += DeviceCheckTimer_Tick;
             deviceCheckTimer.Start();
 
@@ -71,11 +62,8 @@ namespace usb_bulk_2
 
         private void DeviceCheckTimer_Tick(object sender, EventArgs e)
         {
-            // Cihaz durumunu periyodik olarak kontrol et
             if (myDevice == null)
-            {
                 FindDevice();
-            }
         }
 
         private void MainForm_Load(object sender, EventArgs e)
@@ -86,18 +74,9 @@ namespace usb_bulk_2
 
         private void MainForm_FormClosing(object sender, FormClosingEventArgs e)
         {
-            // Zamanlayıcıyı durdur
-            if (deviceCheckTimer != null)
-            {
-                deviceCheckTimer.Stop();
-                deviceCheckTimer.Dispose();
-            }
-
-            // USB cihaz listesini temizle
-            if (usbDevices != null)
-            {
-                usbDevices.Dispose();
-            }
+            deviceCheckTimer?.Stop();
+            deviceCheckTimer?.Dispose();
+            usbDevices?.Dispose();
         }
 
         private void FindDevice()
@@ -106,19 +85,16 @@ namespace usb_bulk_2
             {
                 foreach (CyUSBDevice dev in usbDevices)
                 {
-                    if ((dev.VendorID == USB_VID) && (dev.ProductID == USB_PID))
+                    if (dev.VendorID == USB_VID && dev.ProductID == USB_PID)
                     {
                         myDevice = dev;
-
-                        // Bulk endpointleri bul
                         outEndpoint = null;
                         inEndpoint = null;
-
                         foreach (CyUSBEndPoint ept in myDevice.EndPoints)
                         {
-                            if (ept.Attributes == 2) // Bulk transfer type
+                            if (ept.Attributes == 2)
                             {
-                                if (ept.bIn) // Check if the endpoint is IN
+                                if (ept.bIn)
                                     inEndpoint = (CyBulkEndPoint)ept;
                                 else
                                     outEndpoint = (CyBulkEndPoint)ept;
@@ -129,27 +105,13 @@ namespace usb_bulk_2
                         {
                             UpdateStatus("Cihaz bağlandı!", Color.Green);
                             LogMessage($"Cihaz bulundu: {dev.FriendlyName}");
-                            LogMessage($"Üretici: {dev.Manufacturer}");
-                            LogMessage($"Ürün: {dev.Product}");
-                            LogMessage($"Seri No: {dev.SerialNumber}");
-
-                            // Cihaz versiyonunu sorgula
                             SendVersionQuery();
-
                             return;
                         }
-                        else
-                        {
-                            LogMessage("HATA: Bulk endpointler bulunamadı!");
-                            myDevice = null;
-                        }
+                        myDevice = null;
                     }
                 }
-
-                if (myDevice == null)
-                {
-                    UpdateStatus("Cihaz bulunamadı!", Color.Red);
-                }
+                UpdateStatus("Cihaz bulunamadı!", Color.Red);
             }
             catch (Exception ex)
             {
@@ -162,12 +124,8 @@ namespace usb_bulk_2
         {
             try
             {
-                // Versiyon sorgusu paketi oluştur
-                UsbPacket packet = new UsbPacket();
-                packet.CommandId = UsbPacket.CMD_VERSION;
-                packet.DataLength = 0;
-
-                UsbPacket response = SendPacket(packet);
+                var packet = new UsbPacket { CommandId = UsbPacket.CMD_VERSION, DataLength = 0 };
+                var response = SendPacket(packet);
                 if (response != null)
                 {
                     LogMessage("Versiyon sorgusu gönderildi");
@@ -184,188 +142,139 @@ namespace usb_bulk_2
         {
             if (myDevice == null || outEndpoint == null || inEndpoint == null)
             {
-                LogMessage("Uyarı: Cihaz bağlı değil!");
                 MessageBox.Show("Cihaz bağlı değil!", "Uyarı", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
 
-            try
+            var selected = cmbCommands.SelectedItem as CommandItem;
+            if (selected == null) return;
+
+            var packet = new UsbPacket { CommandId = selected.CommandId };
+            string input = txtData.Text.Trim();
+            if (selected.CommandId == UsbPacket.CMD_WRITE)
             {
-                if (cmbCommands.SelectedItem is CommandItem selectedCommand)
-                {
-                    UsbPacket packet = new UsbPacket();
-                    packet.CommandId = selectedCommand.CommandId;
-
-                    string inputData = txtData.Text.Trim();
-
-                    switch (selectedCommand.CommandId)
-                    {
-                        case UsbPacket.CMD_WRITE:
-                            if (!string.IsNullOrEmpty(inputData))
-                            {
-                                if (inputData.StartsWith("0x"))
-                                    inputData = inputData.Substring(2);
-
-                                byte value;
-                                if (byte.TryParse(inputData, System.Globalization.NumberStyles.HexNumber,
-                                                 System.Globalization.CultureInfo.InvariantCulture, out value))
-                                {
-                                    packet.Data[0] = value;
-                                    packet.DataLength = 1;
-                                }
-                                else
-                                {
-                                    MessageBox.Show("Geçersiz hex değeri! Örnek: 0xA5 veya A5", "Hata",
-                                                  MessageBoxButtons.OK, MessageBoxIcon.Error);
-                                    return;
-                                }
-                            }
-                            else
-                            {
-                                MessageBox.Show("Veri girişi gerekli!", "Uyarı",
-                                              MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                                return;
-                            }
-                            break;
-
-                        case UsbPacket.CMD_ECHO_STRING:
-                            if (!string.IsNullOrEmpty(inputData))
-                            {
-                                // String verisini ascii olarak işle
-                                byte[] stringBytes = Encoding.ASCII.GetBytes(inputData);
-
-                                // Buffer boyutunu aşmamalı
-                                int copyLength = Math.Min(stringBytes.Length, UsbPacket.MAX_DATA_SIZE);
-
-                                Array.Copy(stringBytes, 0, packet.Data, 0, copyLength);
-                                packet.DataLength = (byte)copyLength;
-
-                                LogMessage($"Gönderilecek string: \"{inputData}\"");
-                                LogMessage($"Hex karşılığı: {BitConverter.ToString(stringBytes, 0, copyLength).Replace("-", " ")}");
-                            }
-                            else
-                            {
-                                MessageBox.Show("String girişi gerekli!", "Uyarı",
-                                              MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                                return;
-                            }
-                            break;
-                    }
-
-                    LogMessage($"----- Paket Gönderiliyor ({selectedCommand.Name}) -----");
-
-                    UsbPacket response = SendPacket(packet);
-
-                    if (response != null)
-                    {
-                        LogMessage(response.ParseContent());
-                        LogMessage($"İletişim Süresi: Gönderim={lastSendTime}ms, Toplam={lastResponseTime}ms");
-
-                        // Süreleri durum çubuğunda da göster
-                        UpdateStatus($"Gönderim: {lastSendTime}ms | Yanıt: {lastResponseTime}ms", Color.Blue);
-                    }
-                    else
-                    {
-                        LogMessage("Yanıt alınamadı!");
-                        UpdateStatus("İletişim hatası!", Color.Red);
-                    }
-                }
+                if (!TryParseHex(input, out byte val)) return;
+                packet.Data[0] = val;
+                packet.DataLength = 1;
             }
-            catch (Exception ex)
+            else if (selected.CommandId == UsbPacket.CMD_ECHO_STRING)
             {
-                LogMessage($"Hata: {ex.Message}");
-                UpdateStatus("Hata oluştu!", Color.Red);
+                if (string.IsNullOrEmpty(input))
+                {
+                    MessageBox.Show("String girişi gerekli!", "Uyarı", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+                packet.SetDataFromText(input);
+                LogMessage($"Gönderilecek string: \"{input}\"");
+                LogMessage($"Hex: {packet.GetDataAsHexString()}");
+            }
+
+            LogMessage($"----- Paket Gönderiliyor ({selected.Name}) -----");
+            var resp = SendPacket(packet);
+            if (resp != null)
+            {
+                LogMessage(resp.ParseContent());
+                LogMessage($"Süreler: Gönderim={lastSendTime:F3} ms, Yanıt={lastResponseTime:F3} ms");
+                LogMessage($"------------------------------------------------------------------------");
+                LogMessage($"------------------------------------------------------------------------");
+                UpdateStatus($"Gönderim: {lastSendTime:F1} ms | Yanıt: {lastResponseTime:F1} ms", Color.Blue);
+            }
+            else
+            {
+                UpdateStatus("İletişim hatası!", Color.Red);
             }
         }
 
         private UsbPacket SendPacket(UsbPacket packet)
         {
-            if (myDevice == null || outEndpoint == null || inEndpoint == null)
-                throw new Exception("USB cihazı bağlı değil");
-
             byte[] outData = packet.ToByteArray();
             byte[] inData = new byte[64];
-
-            int outLength = outData.Length;
-            int inLength = inData.Length;
-
+            int outLen = outData.Length;
+            int inLen = inData.Length;
             UsbPacket response = null;
 
             try
             {
-                transferStopwatch.Restart();
+                var swSend = System.Diagnostics.Stopwatch.StartNew();
+                bool okS = outEndpoint.XferData(ref outData, ref outLen);
+                swSend.Stop();
+                lastSendTime = swSend.Elapsed.TotalMilliseconds;
 
-                if (outEndpoint.XferData(ref outData, ref outLength) == true)
-                {
-                    lastSendTime = transferStopwatch.ElapsedMilliseconds;
-
-                    if (inEndpoint.XferData(ref inData, ref inLength) == true)
-                    {
-                        lastResponseTime = transferStopwatch.ElapsedMilliseconds;
-
-                        response = UsbPacket.FromByteArray(inData);
-                    }
-                    else
-                    {
-                        LogMessage("Hata: Yanıt alınamadı!");
-                    }
-                }
-                else
+                if (!okS)
                 {
                     LogMessage("Hata: Veri gönderilemedi!");
+                    return null;
                 }
+
+                double sendMbps = (outLen * 8.0 / 1_000_000.0) / (lastSendTime / 1000.0);
+                LogMessage($"Gönderim: {outLen} byte -> {lastSendTime:F3} ms -> {sendMbps:F2} Mb/s");
+
+                var swR = System.Diagnostics.Stopwatch.StartNew();
+                bool okR = inEndpoint.XferData(ref inData, ref inLen);
+                swR.Stop();
+                lastResponseTime = swR.Elapsed.TotalMilliseconds;
+
+                if (!okR)
+                {
+                    LogMessage("Hata: Yanıt alınamadı!");
+                    return null;
+                }
+
+                double recvMbps = (inLen * 8.0 / 1_000_000.0) / (lastResponseTime / 1000.0);
+                LogMessage($"Alım: {inLen} byte -> {lastResponseTime:F3} ms -> {recvMbps:F2} Mb/s");
+
+                response = UsbPacket.FromByteArray(inData);
             }
             catch (Exception ex)
             {
                 LogMessage($"USB iletişim hatası: {ex.Message}");
             }
-            finally
-            {
-                transferStopwatch.Stop();
-            }
 
             return response;
         }
 
+        private bool TryParseHex(string input, out byte value)
+        {
+            value = 0;
+            if (input.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+                input = input.Substring(2);
+            if (byte.TryParse(input, System.Globalization.NumberStyles.HexNumber,
+                               System.Globalization.CultureInfo.InvariantCulture, out value))
+                return true;
+            MessageBox.Show("Geçersiz hex değeri! Örnek: 0xA5 veya A5", "Hata",
+                            MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return false;
+        }
+
         private void LogMessage(string message)
         {
-            // Eğer farklı thread'den çağrılırsa Invoke kullan
             if (txtLog.InvokeRequired)
-            {
                 txtLog.Invoke(new Action<string>(LogMessage), message);
-                return;
+            else
+            {
+                txtLog.AppendText($"[{DateTime.Now:HH:mm:ss.fff}] {message}\r\n");
+                txtLog.ScrollToCaret();
             }
-
-            string timestamp = DateTime.Now.ToString("HH:mm:ss.fff");
-            txtLog.AppendText($"[{timestamp}] {message}\r\n");
-            txtLog.ScrollToCaret();
         }
 
         private void UpdateStatus(string message, Color color)
         {
-            // Eğer farklı thread'den çağrılırsa Invoke kullan
             if (statusStrip1.InvokeRequired)
-            {
                 statusStrip1.Invoke(new Action<string, Color>(UpdateStatus), message, color);
-                return;
+            else
+            {
+                toolStripStatusLabel1.Text = message;
+                toolStripStatusLabel1.ForeColor = color;
             }
-
-            toolStripStatusLabel1.Text = message;
-            toolStripStatusLabel1.ForeColor = color;
         }
 
-        private void USBDeviceAttached(object sender, EventArgs e)
-        {
-            FindDevice();
-        }
-
+        private void USBDeviceAttached(object sender, EventArgs e) => FindDevice();
         private void USBDeviceRemoved(object sender, EventArgs e)
         {
             if (myDevice != null && !DeviceExistsInList(myDevice))
             {
                 myDevice = null;
-                inEndpoint = null;
-                outEndpoint = null;
+                outEndpoint = inEndpoint = null;
                 UpdateStatus("Cihaz çıkarıldı!", Color.Red);
                 LogMessage("Cihaz çıkarıldı");
             }
@@ -373,33 +282,18 @@ namespace usb_bulk_2
 
         private bool DeviceExistsInList(CyUSBDevice device)
         {
-            foreach (CyUSBDevice dev in usbDevices)
-            {
-                if (dev == device)
-                {
+            foreach (var d in usbDevices)
+                if (d == device)
                     return true;
-                }
-            }
             return false;
         }
-
     }
 
-    // Komut öğelerini tutmak için yardımcı sınıf
     public class CommandItem
     {
         public string Name { get; set; }
         public byte CommandId { get; set; }
-
-        public CommandItem(string name, byte commandId)
-        {
-            Name = name;
-            CommandId = commandId;
-        }
-
-        public override string ToString()
-        {
-            return Name;
-        }
+        public CommandItem(string name, byte commandId) { Name = name; CommandId = commandId; }
+        public override string ToString() => Name;
     }
 }
