@@ -15,6 +15,9 @@ namespace usb_bulk_2
         private CyBulkEndPoint inEndpoint;
         private Timer deviceCheckTimer;
 
+        private System.Diagnostics.Stopwatch transferStopwatch = new System.Diagnostics.Stopwatch();
+        private long lastSendTime = 0;
+        private long lastResponseTime = 0;
         // USB VID/PID
         private const int USB_VID = 0x04B4;  // Cypress VID
         private const int USB_PID = 0xF0;  // PSoC için seçtiğiniz PID
@@ -36,38 +39,33 @@ namespace usb_bulk_2
 
         private void SetupControls()
         {
-            // Komutlar için ComboBox'ı doldur
             cmbCommands.Items.Add(new CommandItem("Read", UsbPacket.CMD_READ));
             cmbCommands.Items.Add(new CommandItem("Write", UsbPacket.CMD_WRITE));
             cmbCommands.Items.Add(new CommandItem("Status", UsbPacket.CMD_STATUS));
             cmbCommands.Items.Add(new CommandItem("Reset", UsbPacket.CMD_RESET));
             cmbCommands.Items.Add(new CommandItem("Version", UsbPacket.CMD_VERSION));
+            cmbCommands.Items.Add(new CommandItem("String Echo", UsbPacket.CMD_ECHO_STRING));
             cmbCommands.SelectedIndex = 0;
 
-            // Buton olayları
+
             btnSend.Click += BtnSend_Click;
 
-            // Log görüntüleme ayarları
             txtLog.Font = new Font("Consolas", 9F);
             txtLog.ReadOnly = true;
         }
 
         private void SetupUsbMonitoring()
         {
-            // USB cihaz listesi oluştur
             usbDevices = new USBDeviceList(CyConst.DEVICES_CYUSB);
 
-            // USB olay işleyicileri
             usbDevices.DeviceAttached += new EventHandler(USBDeviceAttached);
             usbDevices.DeviceRemoved += new EventHandler(USBDeviceRemoved);
 
-            // Periyodik cihaz kontrolü için zamanlayıcı
             deviceCheckTimer = new Timer();
             deviceCheckTimer.Interval = 2000; // 2 saniye
             deviceCheckTimer.Tick += DeviceCheckTimer_Tick;
             deviceCheckTimer.Start();
 
-            // İlk cihaz kontrolü
             FindDevice();
         }
 
@@ -193,143 +191,140 @@ namespace usb_bulk_2
 
             try
             {
-                // Seçilen komutu al
                 if (cmbCommands.SelectedItem is CommandItem selectedCommand)
                 {
                     UsbPacket packet = new UsbPacket();
                     packet.CommandId = selectedCommand.CommandId;
 
-                    // Komuta göre veri hazırla
+                    string inputData = txtData.Text.Trim();
+
                     switch (selectedCommand.CommandId)
                     {
                         case UsbPacket.CMD_WRITE:
-                            // TextBox'tan metni al
-                            string inputText = txtData.Text;
-                            if (!string.IsNullOrEmpty(inputText))
+                            if (!string.IsNullOrEmpty(inputData))
                             {
-                                // Metni byte dizisine dönüştür
-                                byte[] textBytes = Encoding.ASCII.GetBytes(inputText);
+                                if (inputData.StartsWith("0x"))
+                                    inputData = inputData.Substring(2);
 
-                                // Veri uzunluğunu kontrol et
-                                if (textBytes.Length > UsbPacket.MAX_DATA_SIZE)
+                                byte value;
+                                if (byte.TryParse(inputData, System.Globalization.NumberStyles.HexNumber,
+                                                 System.Globalization.CultureInfo.InvariantCulture, out value))
                                 {
-                                    LogMessage($"Uyarı: Veri çok uzun! Max {UsbPacket.MAX_DATA_SIZE} byte gönderebilirsiniz.");
-                                    Array.Resize(ref textBytes, UsbPacket.MAX_DATA_SIZE);
+                                    packet.Data[0] = value;
+                                    packet.DataLength = 1;
                                 }
-
-                                // Veriyi pakete ekle
-                                packet.DataLength = (byte)textBytes.Length;
-                                Array.Copy(textBytes, packet.Data, textBytes.Length);
-
-                                LogMessage($"Gönderilen metin: {inputText}");
-                                LogMessage($"Hex olarak: {BitConverter.ToString(textBytes).Replace("-", " ")}");
+                                else
+                                {
+                                    MessageBox.Show("Geçersiz hex değeri! Örnek: 0xA5 veya A5", "Hata",
+                                                  MessageBoxButtons.OK, MessageBoxIcon.Error);
+                                    return;
+                                }
                             }
                             else
                             {
-                                // Veri yoksa varsayılan durum değeri (0x01) gönder
-                                packet.DataLength = 1;
-                                packet.Data[0] = 0x01;
+                                MessageBox.Show("Veri girişi gerekli!", "Uyarı",
+                                              MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                                return;
                             }
                             break;
 
-                        case UsbPacket.CMD_READ:
-                        case UsbPacket.CMD_STATUS:
-                        case UsbPacket.CMD_RESET:
-                        case UsbPacket.CMD_VERSION:
-                            // Bu komutlar için ek veri gerekmez
-                            packet.DataLength = 0;
-                            break;
-
-                        default:
-                            // Diğer özel komutlar için
-                            if (!string.IsNullOrEmpty(txtData.Text))
+                        case UsbPacket.CMD_ECHO_STRING:
+                            if (!string.IsNullOrEmpty(inputData))
                             {
-                                // Metni doğrudan byte'a dönüştür
-                                byte[] customData = Encoding.ASCII.GetBytes(txtData.Text);
-                                packet.DataLength = (byte)Math.Min(customData.Length, UsbPacket.MAX_DATA_SIZE);
-                                Array.Copy(customData, packet.Data, packet.DataLength);
+                                // String verisini ascii olarak işle
+                                byte[] stringBytes = Encoding.ASCII.GetBytes(inputData);
+
+                                // Buffer boyutunu aşmamalı
+                                int copyLength = Math.Min(stringBytes.Length, UsbPacket.MAX_DATA_SIZE);
+
+                                Array.Copy(stringBytes, 0, packet.Data, 0, copyLength);
+                                packet.DataLength = (byte)copyLength;
+
+                                LogMessage($"Gönderilecek string: \"{inputData}\"");
+                                LogMessage($"Hex karşılığı: {BitConverter.ToString(stringBytes, 0, copyLength).Replace("-", " ")}");
+                            }
+                            else
+                            {
+                                MessageBox.Show("String girişi gerekli!", "Uyarı",
+                                              MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                                return;
                             }
                             break;
                     }
 
-                    // Paketi gönder ve cevap al
+                    LogMessage($"----- Paket Gönderiliyor ({selectedCommand.Name}) -----");
+
                     UsbPacket response = SendPacket(packet);
 
                     if (response != null)
                     {
-                        LogMessage("Komut başarıyla gönderildi");
                         LogMessage(response.ParseContent());
+                        LogMessage($"İletişim Süresi: Gönderim={lastSendTime}ms, Toplam={lastResponseTime}ms");
 
-                        // Eğer yanıt metin içeriyorsa göster
-                        if (response.DataLength > 1 && response.GetResultCode() == UsbPacket.RESULT_OK)
-                        {
-                            try
-                            {
-                                // İlk byte sonuç kodu olduğundan onu atlayıp geri kalanını metin olarak göster
-                                byte[] responseTextBytes = new byte[response.DataLength - 1];
-                                Array.Copy(response.Data, 1, responseTextBytes, 0, response.DataLength - 1);
-
-                                string responseText = Encoding.ASCII.GetString(responseTextBytes);
-                                LogMessage($"Yanıt metni: {responseText}");
-                            }
-                            catch { /* Metin dönüşümü başarısızsa bu kısmı atla */ }
-                        }
+                        // Süreleri durum çubuğunda da göster
+                        UpdateStatus($"Gönderim: {lastSendTime}ms | Yanıt: {lastResponseTime}ms", Color.Blue);
+                    }
+                    else
+                    {
+                        LogMessage("Yanıt alınamadı!");
+                        UpdateStatus("İletişim hatası!", Color.Red);
                     }
                 }
             }
             catch (Exception ex)
             {
                 LogMessage($"Hata: {ex.Message}");
+                UpdateStatus("Hata oluştu!", Color.Red);
             }
         }
 
         private UsbPacket SendPacket(UsbPacket packet)
         {
             if (myDevice == null || outEndpoint == null || inEndpoint == null)
-                return null;
+                throw new Exception("USB cihazı bağlı değil");
+
+            byte[] outData = packet.ToByteArray();
+            byte[] inData = new byte[64];
+
+            int outLength = outData.Length;
+            int inLength = inData.Length;
+
+            UsbPacket response = null;
 
             try
             {
-                // Paketi byte dizisine dönüştür
-                byte[] outData = packet.ToByteArray();
-                byte[] inData = new byte[64]; // Alınacak veri buffer'ı
+                transferStopwatch.Restart();
 
-                int outLength = outData.Length;
-                int inLength = 64;
-
-                // Veriyi gönder
-                if (!outEndpoint.XferData(ref outData, ref outLength))
+                if (outEndpoint.XferData(ref outData, ref outLength) == true)
                 {
-                    LogMessage("Gönderim hatası: Veri gönderilemedi!");
-                    return null;
+                    lastSendTime = transferStopwatch.ElapsedMilliseconds;
+
+                    if (inEndpoint.XferData(ref inData, ref inLength) == true)
+                    {
+                        lastResponseTime = transferStopwatch.ElapsedMilliseconds;
+
+                        response = UsbPacket.FromByteArray(inData);
+                    }
+                    else
+                    {
+                        LogMessage("Hata: Yanıt alınamadı!");
+                    }
                 }
-
-                // Yanıtı bekle (kısa bir süre)
-                System.Threading.Thread.Sleep(10);
-
-                // Cevabı al
-                if (!inEndpoint.XferData(ref inData, ref inLength))
+                else
                 {
-                    LogMessage("Alım hatası: Yanıt alınamadı!");
-                    return null;
-                }
-
-                try
-                {
-                    // Alınan veriyi pakete dönüştür
-                    return UsbPacket.FromByteArray(inData);
-                }
-                catch (Exception ex)
-                {
-                    LogMessage($"Paket çözme hatası: {ex.Message}");
-                    return null;
+                    LogMessage("Hata: Veri gönderilemedi!");
                 }
             }
             catch (Exception ex)
             {
-                LogMessage($"Transfer hatası: {ex.Message}");
-                return null;
+                LogMessage($"USB iletişim hatası: {ex.Message}");
             }
+            finally
+            {
+                transferStopwatch.Stop();
+            }
+
+            return response;
         }
 
         private void LogMessage(string message)

@@ -16,6 +16,7 @@ namespace usb_bulk_2
         public const byte CMD_STATUS = 0x03;
         public const byte CMD_RESET = 0x04;
         public const byte CMD_VERSION = 0x05;
+        public const byte CMD_ECHO_STRING = 0x06; 
 
         // Sonuç kodları
         public const byte RESULT_OK = 0x00;
@@ -133,15 +134,17 @@ namespace usb_bulk_2
         }
 
         // Komut adını al
+        // Komut adını al
         public static string GetCommandName(byte commandId)
         {
             switch (commandId)
             {
-                case CMD_READ: return "Okuma";
-                case CMD_WRITE: return "Yazma";
-                case CMD_STATUS: return "Durum";
-                case CMD_RESET: return "Sıfırlama";
-                case CMD_VERSION: return "Versiyon";
+                case CMD_READ: return "Read";
+                case CMD_WRITE: return "Write";
+                case CMD_STATUS: return "Status";
+                case CMD_RESET: return "Reset";
+                case CMD_VERSION: return "Version";
+                case CMD_ECHO_STRING: return "String Echo";
                 default: return $"Bilinmeyen (0x{commandId:X2})";
             }
         }
@@ -159,6 +162,7 @@ namespace usb_bulk_2
             }
         }
 
+        // Paket içeriğini oku ve açıkla
         // Paket içeriğini oku ve açıkla
         public string ParseContent()
         {
@@ -200,6 +204,17 @@ namespace usb_bulk_2
                         if (DataLength > 3)
                         {
                             sb.AppendLine($"Versiyon: v{Data[1]}.{Data[2]}.{Data[3]}");
+                        }
+                        break;
+
+                    case CMD_ECHO_STRING:
+                        if (DataLength > 1)
+                        {
+                            byte[] stringData = new byte[DataLength - 1];
+                            Array.Copy(Data, 1, stringData, 0, DataLength - 1);
+                            string text = Encoding.ASCII.GetString(stringData);
+                            sb.AppendLine($"Echo: \"{text}\"");
+                            sb.AppendLine($"Hex: {BitConverter.ToString(stringData).Replace("-", " ")}");
                         }
                         break;
                 }
