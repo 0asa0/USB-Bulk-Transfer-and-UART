@@ -14,10 +14,21 @@ namespace usb_bulk_2
         private CyBulkEndPoint outEndpoint;
         private CyBulkEndPoint inEndpoint;
         private Timer deviceCheckTimer;
+        private Timer echoTimer; // Echo modu için sürekli gönderim timeri
+        private bool isEchoRunning = false; // Echo modunun çalışıp çalışmadığını kontrol eder
 
         // Daha hassas ölçüm için double kullanıyoruz
         private double lastSendTime = 0;
         private double lastResponseTime = 0;
+
+        // İstatistikler için
+        private int echoPacketCount = 0;
+        private double totalSendTime = 0;
+        private double totalResponseTime = 0;
+        private double minSendTime = double.MaxValue;
+        private double maxSendTime = 0;
+        private double minResponseTime = double.MaxValue;
+        private double maxResponseTime = 0;
 
         // USB VID/PID
         private const int USB_VID = 0x04B4;  // Cypress VID
@@ -30,6 +41,7 @@ namespace usb_bulk_2
             this.FormClosing += MainForm_FormClosing;
             SetupControls();
             SetupUsbMonitoring();
+            SetupEchoTimer();
         }
 
         private void SetupControls()
@@ -45,6 +57,28 @@ namespace usb_bulk_2
             btnSend.Click += BtnSend_Click;
             txtLog.Font = new Font("Consolas", 9F);
             txtLog.ReadOnly = true;
+
+            // Komut değişikliğini dinleme
+            cmbCommands.SelectedIndexChanged += CmbCommands_SelectedIndexChanged;
+        }
+
+        private void CmbCommands_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            // Echo modu seçildiğinde buton yazısını güncelleme
+            UpdateButtonText();
+        }
+
+        private void UpdateButtonText()
+        {
+            var selected = cmbCommands.SelectedItem as CommandItem;
+            if (selected != null && selected.CommandId == UsbPacket.CMD_ECHO_STRING)
+            {
+                btnSend.Text = isEchoRunning ? "Stop" : "Start Echo";
+            }
+            else
+            {
+                btnSend.Text = "Send";
+            }
         }
 
         private void SetupUsbMonitoring()
@@ -58,6 +92,111 @@ namespace usb_bulk_2
             deviceCheckTimer.Start();
 
             FindDevice();
+        }
+
+        private void SetupEchoTimer()
+        {
+            echoTimer = new Timer { Interval = 100 }; // 100ms aralıklarla echo gönderimi
+            echoTimer.Tick += EchoTimer_Tick;
+        }
+
+        private void EchoTimer_Tick(object sender, EventArgs e)
+        {
+            if (!isEchoRunning) return;
+            SendEchoPacket();
+        }
+
+        private void SendEchoPacket()
+        {
+            if (myDevice == null || outEndpoint == null || inEndpoint == null) return;
+
+            string input = txtData.Text.Trim();
+            if (string.IsNullOrEmpty(input))
+            {
+                input = "Echo Test";
+                txtData.Text = input;
+            }
+
+            var packet = new UsbPacket { CommandId = UsbPacket.CMD_ECHO_STRING };
+            packet.SetDataFromText(input);
+
+            var resp = SendPacket(packet);
+            if (resp != null)
+            {
+                echoPacketCount++;
+                totalSendTime += lastSendTime;
+                totalResponseTime += lastResponseTime;
+
+                // Min/Max değerleri güncelleme
+                minSendTime = Math.Min(minSendTime, lastSendTime);
+                maxSendTime = Math.Max(maxSendTime, lastSendTime);
+                minResponseTime = Math.Min(minResponseTime, lastResponseTime);
+                maxResponseTime = Math.Max(maxResponseTime, lastResponseTime);
+
+                // Ortalama değerleri hesaplama
+                double avgSendTime = totalSendTime / echoPacketCount;
+                double avgResponseTime = totalResponseTime / echoPacketCount;
+
+                // Durumu güncelleme
+                UpdateStatus(
+                    $"Echo: #{echoPacketCount} | Avg: {avgSendTime:F1}/{avgResponseTime:F1} ms | Min: {minSendTime:F1}/{minResponseTime:F1} ms | Max: {maxSendTime:F1}/{maxResponseTime:F1} ms",
+                    Color.Blue);
+
+                // Her 50 pakette bir detaylı log
+                if (echoPacketCount % 50 == 0)
+                {
+                    LogMessage($"Echo istatistikleri (#{echoPacketCount}):");
+                    LogMessage($"Gönderim - Ort: {avgSendTime:F3} ms, Min: {minSendTime:F3} ms, Max: {maxSendTime:F3} ms");
+                    LogMessage($"Yanıt   - Ort: {avgResponseTime:F3} ms, Min: {minResponseTime:F3} ms, Max: {maxResponseTime:F3} ms");
+                }
+            }
+            else
+            {
+                // Hata durumunda echo modunu durdur
+                StopEchoMode();
+                UpdateStatus("Echo iletişim hatası! Durduruldu.", Color.Red);
+            }
+        }
+
+        private void StartEchoMode()
+        {
+            if (isEchoRunning) return;
+
+            isEchoRunning = true;
+            echoPacketCount = 0;
+            totalSendTime = 0;
+            totalResponseTime = 0;
+            minSendTime = double.MaxValue;
+            maxSendTime = 0;
+            minResponseTime = double.MaxValue;
+            maxResponseTime = 0;
+
+            UpdateButtonText();
+            LogMessage("----- Echo modu başlatıldı -----");
+            LogMessage($"Echo string: \"{txtData.Text.Trim()}\"");
+            echoTimer.Start();
+        }
+
+        private void StopEchoMode()
+        {
+            if (!isEchoRunning) return;
+
+            echoTimer.Stop();
+            isEchoRunning = false;
+            UpdateButtonText();
+
+            // Özet istatistikleri göster
+            if (echoPacketCount > 0)
+            {
+                double avgSendTime = totalSendTime / echoPacketCount;
+                double avgResponseTime = totalResponseTime / echoPacketCount;
+
+                LogMessage("----- Echo modu durduruldu -----");
+                LogMessage($"Toplam paket sayısı: {echoPacketCount}");
+                LogMessage($"Gönderim - Ort: {avgSendTime:F3} ms, Min: {minSendTime:F3} ms, Max: {maxSendTime:F3} ms");
+                LogMessage($"Yanıt   - Ort: {avgResponseTime:F3} ms, Min: {minResponseTime:F3} ms, Max: {maxResponseTime:F3} ms");
+                LogMessage("------------------------------");
+            }
         }
 
         private void DeviceCheckTimer_Tick(object sender, EventArgs e)
@@ -74,8 +213,10 @@ namespace usb_bulk_2
 
         private void MainForm_FormClosing(object sender, FormClosingEventArgs e)
         {
+            StopEchoMode();
             deviceCheckTimer?.Stop();
             deviceCheckTimer?.Dispose();
+            echoTimer?.Dispose();
             usbDevices?.Dispose();
         }
 
@@ -149,6 +290,21 @@ namespace usb_bulk_2
             var selected = cmbCommands.SelectedItem as CommandItem;
             if (selected == null) return;
 
+            // Echo string modunda start/stop işlemi
+            if (selected.CommandId == UsbPacket.CMD_ECHO_STRING)
+            {
+                if (isEchoRunning)
+                {
+                    StopEchoMode();
+                }
+                else
+                {
+                    StartEchoMode();
+                }
+                return;
+            }
+
+            // Normal komut gönderimi
             var packet = new UsbPacket { CommandId = selected.CommandId };
             string input = txtData.Text.Trim();
             if (selected.CommandId == UsbPacket.CMD_WRITE)
@@ -207,7 +363,12 @@ namespace usb_bulk_2
                 }
 
                 double sendMbps = (outLen * 8.0 / 1_000_000.0) / (lastSendTime / 1000.0);
-                LogMessage($"Gönderim: {outLen} byte -> {lastSendTime:F3} ms -> {sendMbps:F2} Mb/s");
+
+                // Echo modunda her paket için detaylı log gösterme
+                if (!isEchoRunning || echoPacketCount % 50 == 0)
+                {
+                    LogMessage($"Gönderim: {outLen} byte -> {lastSendTime:F3} ms -> {sendMbps:F2} Mb/s");
+                }
 
                 var swR = System.Diagnostics.Stopwatch.StartNew();
                 bool okR = inEndpoint.XferData(ref inData, ref inLen);
@@ -221,7 +382,12 @@ namespace usb_bulk_2
                 }
 
                 double recvMbps = (inLen * 8.0 / 1_000_000.0) / (lastResponseTime / 1000.0);
-                LogMessage($"Alım: {inLen} byte -> {lastResponseTime:F3} ms -> {recvMbps:F2} Mb/s");
+
+                // Echo modunda her paket için detaylı log gösterme
+                if (!isEchoRunning || echoPacketCount % 50 == 0)
+                {
+                    LogMessage($"Alım: {inLen} byte -> {lastResponseTime:F3} ms -> {recvMbps:F2} Mb/s");
+                }
 
                 response = UsbPacket.FromByteArray(inData);
             }
@@ -275,6 +441,13 @@ namespace usb_bulk_2
             {
                 myDevice = null;
                 outEndpoint = inEndpoint = null;
+
+                // Echo modu çalışıyorsa durdur
+                if (isEchoRunning)
+                {
+                    StopEchoMode();
+                }
+
                 UpdateStatus("Cihaz çıkarıldı!", Color.Red);
                 LogMessage("Cihaz çıkarıldı");
             }
