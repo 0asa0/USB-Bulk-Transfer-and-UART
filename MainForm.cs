@@ -32,7 +32,7 @@ namespace usb_bulk_2
 
         // USB VID/PID
         private const int USB_VID = 0x04B4;  // Cypress VID
-        private const int USB_PID = 0x00F0;  // PSoC için seçtiğiniz PID
+        private const int USB_PID = 0xF001;  // PSoC için seçtiğiniz PID
 
         public MainForm()
         {
@@ -184,7 +184,7 @@ namespace usb_bulk_2
             echoTimer.Stop();
             isEchoRunning = false;
             UpdateButtonText();
-
+            
             // Özet istatistikleri göster
             if (echoPacketCount > 0)
             {
