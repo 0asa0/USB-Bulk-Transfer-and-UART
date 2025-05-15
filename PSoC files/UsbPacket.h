@@ -2,7 +2,8 @@
 #define USB_PACKET_H
     
 #include <cytypes.h>
-
+#include <stdint.h>
+    
 #define PACKET_HEADER1     0xAA
 #define PACKET_HEADER2     0x55
 #define MAX_DATA_SIZE      60

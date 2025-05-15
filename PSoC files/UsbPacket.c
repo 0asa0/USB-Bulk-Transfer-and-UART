@@ -1,3 +1,5 @@
+/*UsbPacket*/
+
 #include "UsbPacket.h"
 
 /* CRC-16-CCITT hesaplama algoritması */
