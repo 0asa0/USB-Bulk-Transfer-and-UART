@@ -4,35 +4,59 @@ using System.Drawing;
 using System.Text;
 using System.Windows.Forms;
 using CyUSB;
+using System.IO.Ports; // UART için eklendi
+using System.Diagnostics; // Stopwatch için eklendi
+using System.Linq; // COM portlarını bulmak için eklendi
 
 namespace usb_bulk_2
 {
     public partial class MainForm : Form
     {
+        // USB Değişkenleri
         private USBDeviceList usbDevices;
         private CyUSBDevice myDevice;
         private CyBulkEndPoint outEndpoint;
         private CyBulkEndPoint inEndpoint;
         private Timer deviceCheckTimer;
-        private Timer echoTimer; // Echo modu için sürekli gönderim timeri
-        private bool isEchoRunning = false; // Echo modunun çalışıp çalışmadığını kontrol eder
+        private Timer usbEchoTimer;
+        private bool isUsbEchoRunning = false;
 
-        // Daha hassas ölçüm için double kullanıyoruz
-        private double lastSendTime = 0;
-        private double lastResponseTime = 0;
+        private double lastUsbSendTime = 0;
+        private double lastUsbResponseTime = 0;
+        private int usbEchoPacketCount = 0;
+        private double totalUsbSendTime = 0;
+        private double totalUsbResponseTime = 0;
+        private double minUsbSendTime = double.MaxValue;
+        private double maxUsbSendTime = 0;
+        private double minUsbResponseTime = double.MaxValue;
+        private double maxUsbResponseTime = 0;
 
-        // İstatistikler için
-        private int echoPacketCount = 0;
-        private double totalSendTime = 0;
-        private double totalResponseTime = 0;
-        private double minSendTime = double.MaxValue;
-        private double maxSendTime = 0;
-        private double minResponseTime = double.MaxValue;
-        private double maxResponseTime = 0;
+        private const int USB_VID = 0x04B4;
+        private const int USB_PID = 0xF001;
 
-        // USB VID/PID
-        private const int USB_VID = 0x04B4;  // Cypress VID
-        private const int USB_PID = 0xF001;  // PSoC için seçtiğiniz PID
+        // UART Değişkenleri
+        private SerialPort uartPort;
+        private Timer uartEchoTimer;
+        private bool isUartEchoRunning = false;
+        private string selectedComPort = null; // Seçilen veya bulunan COM portu
+        private const int UART_BAUD_RATE = 115200; // Varsayılan baud rate
+
+        private double lastUartSendTime = 0;
+        private double lastUartResponseTime = 0;
+        private int uartEchoPacketCount = 0;
+        private double totalUartSendTime = 0;
+        private double totalUartResponseTime = 0;
+        private double minUartSendTime = double.MaxValue;
+        private double maxUartSendTime = 0;
+        private double minUartResponseTime = double.MaxValue;
+        private double maxUartResponseTime = 0;
+        private StringBuilder uartReceiveBuffer = new StringBuilder();
+
+        // Log renkleri
+        private readonly Color usbEchoLogColor = Color.DarkCyan;
+        private readonly Color uartEchoLogColor = Color.DarkMagenta;
+        private readonly Color errorLogColor = Color.OrangeRed;
+
 
         public MainForm()
         {
@@ -41,7 +65,9 @@ namespace usb_bulk_2
             this.FormClosing += MainForm_FormClosing;
             SetupControls();
             SetupUsbMonitoring();
-            SetupEchoTimer();
+            SetupUsbEchoTimer();
+            SetupUart(); // UART kurulumu
+            SetupUartEchoTimer(); // UART echo timer kurulumu
         }
 
         private void SetupControls()
@@ -51,29 +77,39 @@ namespace usb_bulk_2
             cmbCommands.Items.Add(new CommandItem("Status", UsbPacket.CMD_STATUS));
             cmbCommands.Items.Add(new CommandItem("Reset", UsbPacket.CMD_RESET));
             cmbCommands.Items.Add(new CommandItem("Version", UsbPacket.CMD_VERSION));
-            cmbCommands.Items.Add(new CommandItem("String Echo", UsbPacket.CMD_ECHO_STRING));
+            cmbCommands.Items.Add(new CommandItem("USB String Echo", UsbPacket.CMD_ECHO_STRING));
+            cmbCommands.Items.Add(new CommandItem("UART String Echo", UsbPacket.CMD_UART_ECHO_STRING)); // UART Echo eklendi
             cmbCommands.SelectedIndex = 0;
 
             btnSend.Click += BtnSend_Click;
             txtLog.Font = new Font("Consolas", 9F);
             txtLog.ReadOnly = true;
 
-            // Komut değişikliğini dinleme
             cmbCommands.SelectedIndexChanged += CmbCommands_SelectedIndexChanged;
         }
 
         private void CmbCommands_SelectedIndexChanged(object sender, EventArgs e)
         {
-            // Echo modu seçildiğinde buton yazısını güncelleme
             UpdateButtonText();
         }
 
         private void UpdateButtonText()
         {
             var selected = cmbCommands.SelectedItem as CommandItem;
-            if (selected != null && selected.CommandId == UsbPacket.CMD_ECHO_STRING)
+            if (selected != null)
             {
-                btnSend.Text = isEchoRunning ? "Stop" : "Start Echo";
+                if (selected.CommandId == UsbPacket.CMD_ECHO_STRING) // USB Echo
+                {
+                    btnSend.Text = isUsbEchoRunning ? "Stop USB Echo" : "Start USB Echo";
+                }
+                else if (selected.CommandId == UsbPacket.CMD_UART_ECHO_STRING) // UART Echo
+                {
+                    btnSend.Text = isUartEchoRunning ? "Stop UART Echo" : "Start UART Echo";
+                }
+                else
+                {
+                    btnSend.Text = "Send";
+                }
             }
             else
             {
@@ -81,6 +117,7 @@ namespace usb_bulk_2
             }
         }
 
+        #region USB İletişimi
         private void SetupUsbMonitoring()
         {
             usbDevices = new USBDeviceList(CyConst.DEVICES_CYUSB);
@@ -94,108 +131,126 @@ namespace usb_bulk_2
             FindDevice();
         }
 
-        private void SetupEchoTimer()
+        private void SetupUsbEchoTimer()
         {
-            echoTimer = new Timer { Interval = 100 }; // 100ms aralıklarla echo gönderimi
-            echoTimer.Tick += EchoTimer_Tick;
+            usbEchoTimer = new Timer { Interval = 100 };
+            usbEchoTimer.Tick += UsbEchoTimer_Tick;
         }
 
-        private void EchoTimer_Tick(object sender, EventArgs e)
+        private void UsbEchoTimer_Tick(object sender, EventArgs e)
         {
-            if (!isEchoRunning) return;
-            SendEchoPacket();
+            if (!isUsbEchoRunning) return;
+            SendUsbEchoPacket();
         }
 
-        private void SendEchoPacket()
+        private void SendUsbEchoPacket()
         {
             if (myDevice == null || outEndpoint == null || inEndpoint == null) return;
 
             string input = txtData.Text.Trim();
             if (string.IsNullOrEmpty(input))
             {
-                input = "Echo Test";
-                txtData.Text = input;
+                input = "USB Echo Test";
             }
 
             var packet = new UsbPacket { CommandId = UsbPacket.CMD_ECHO_STRING };
             packet.SetDataFromText(input);
 
-            var resp = SendPacket(packet);
+            var resp = SendUsbPacket(packet); // SendUsbPacket handles its own colored logging for echo
             if (resp != null)
             {
-                echoPacketCount++;
-                totalSendTime += lastSendTime;
-                totalResponseTime += lastResponseTime;
+                usbEchoPacketCount++;
+                totalUsbSendTime += lastUsbSendTime;
+                totalUsbResponseTime += lastUsbResponseTime;
 
-                // Min/Max değerleri güncelleme
-                minSendTime = Math.Min(minSendTime, lastSendTime);
-                maxSendTime = Math.Max(maxSendTime, lastSendTime);
-                minResponseTime = Math.Min(minResponseTime, lastResponseTime);
-                maxResponseTime = Math.Max(maxResponseTime, lastResponseTime);
+                minUsbSendTime = Math.Min(minUsbSendTime, lastUsbSendTime);
+                maxUsbSendTime = Math.Max(maxUsbSendTime, lastUsbSendTime);
+                minUsbResponseTime = Math.Min(minUsbResponseTime, lastUsbResponseTime);
+                maxUsbResponseTime = Math.Max(maxUsbResponseTime, lastUsbResponseTime);
 
-                // Ortalama değerleri hesaplama
-                double avgSendTime = totalSendTime / echoPacketCount;
-                double avgResponseTime = totalResponseTime / echoPacketCount;
+                double avgSendTime = totalUsbSendTime / usbEchoPacketCount;
+                double avgResponseTime = totalUsbResponseTime / usbEchoPacketCount;
 
-                // Durumu güncelleme
-                UpdateStatus(
-                    $"Echo: #{echoPacketCount} | Avg: {avgSendTime:F1}/{avgResponseTime:F1} ms | Min: {minSendTime:F1}/{minResponseTime:F1} ms | Max: {maxSendTime:F1}/{maxResponseTime:F1} ms",
-                    Color.Blue);
-
-                // Her 50 pakette bir detaylı log
-                if (echoPacketCount % 50 == 0)
+                if (isUsbEchoRunning)
                 {
-                    LogMessage($"Echo istatistikleri (#{echoPacketCount}):");
-                    LogMessage($"Gönderim - Ort: {avgSendTime:F3} ms, Min: {minSendTime:F3} ms, Max: {maxSendTime:F3} ms");
-                    LogMessage($"Yanıt   - Ort: {avgResponseTime:F3} ms, Min: {minResponseTime:F3} ms, Max: {maxResponseTime:F3} ms");
+                    UpdateStatus(
+                        $"USB Echo: #{usbEchoPacketCount} | Avg: {avgSendTime:F1}/{avgResponseTime:F1} ms | Min: {minUsbSendTime:F1}/{minUsbResponseTime:F1} ms | Max: {maxUsbSendTime:F1}/{maxUsbResponseTime:F1} ms",
+                        usbEchoLogColor); // Status bar color
+                }
+
+
+                if (usbEchoPacketCount % 50 == 0)
+                {
+                    LogMessage($"USB Echo Stats (#{usbEchoPacketCount}):", usbEchoLogColor);
+                    LogMessage($"  Send - Avg: {avgSendTime:F3} ms, Min: {minUsbSendTime:F3} ms, Max: {maxUsbSendTime:F3} ms", usbEchoLogColor);
+                    LogMessage($"  Recv - Avg: {avgResponseTime:F3} ms, Min: {minUsbResponseTime:F3} ms, Max: {maxUsbResponseTime:F3} ms", usbEchoLogColor);
                 }
             }
             else
             {
-                // Hata durumunda echo modunu durdur
-                StopEchoMode();
-                UpdateStatus("Echo iletişim hatası! Durduruldu.", Color.Red);
+                StopUsbEchoMode();
+                UpdateStatus("USB Echo communication error! Stopped.", Color.Red);
             }
         }
 
-        private void StartEchoMode()
+        private void StartUsbEchoMode()
         {
-            if (isEchoRunning) return;
+            if (isUsbEchoRunning) return;
+            if (myDevice == null || outEndpoint == null || inEndpoint == null)
+            {
+                MessageBox.Show("USB device not connected for Echo!", "USB Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
 
-            isEchoRunning = true;
-            echoPacketCount = 0;
-            totalSendTime = 0;
-            totalResponseTime = 0;
-            minSendTime = double.MaxValue;
-            maxSendTime = 0;
-            minResponseTime = double.MaxValue;
-            maxResponseTime = 0;
+            isUsbEchoRunning = true;
+            usbEchoPacketCount = 0;
+            totalUsbSendTime = 0;
+            totalUsbResponseTime = 0;
+            minUsbSendTime = double.MaxValue;
+            maxUsbSendTime = 0;
+            minUsbResponseTime = double.MaxValue;
+            maxUsbResponseTime = 0;
 
-            UpdateButtonText();
-            LogMessage("----- Echo modu başlatıldı -----");
-            LogMessage($"Echo string: \"{txtData.Text.Trim()}\"");
-            echoTimer.Start();
+            var currentSelection = cmbCommands.SelectedItem as CommandItem;
+            if (currentSelection != null && currentSelection.CommandId == UsbPacket.CMD_ECHO_STRING)
+            {
+                UpdateButtonText();
+            }
+            LogMessage("----- USB Echo mode started -----", usbEchoLogColor);
+            string initialData = txtData.Text.Trim();
+            if (string.IsNullOrEmpty(initialData)) initialData = "USB Echo Test";
+            LogMessage($"USB Echo string: \"{initialData}\"", usbEchoLogColor);
+            usbEchoTimer.Start();
         }
 
-        private void StopEchoMode()
+        private void StopUsbEchoMode()
         {
-            if (!isEchoRunning) return;
+            if (!isUsbEchoRunning) return;
 
-            echoTimer.Stop();
-            isEchoRunning = false;
-            UpdateButtonText();
-            
-            // Özet istatistikleri göster
-            if (echoPacketCount > 0)
+            usbEchoTimer.Stop();
+            isUsbEchoRunning = false;
+
+            var currentSelection = cmbCommands.SelectedItem as CommandItem;
+            if (currentSelection != null && currentSelection.CommandId == UsbPacket.CMD_ECHO_STRING)
             {
-                double avgSendTime = totalSendTime / echoPacketCount;
-                double avgResponseTime = totalResponseTime / echoPacketCount;
+                UpdateButtonText();
+            }
 
-                LogMessage("----- Echo modu durduruldu -----");
-                LogMessage($"Toplam paket sayısı: {echoPacketCount}");
-                LogMessage($"Gönderim - Ort: {avgSendTime:F3} ms, Min: {minSendTime:F3} ms, Max: {maxSendTime:F3} ms");
-                LogMessage($"Yanıt   - Ort: {avgResponseTime:F3} ms, Min: {minResponseTime:F3} ms, Max: {maxResponseTime:F3} ms");
-                LogMessage("------------------------------");
+
+            if (usbEchoPacketCount > 0)
+            {
+                double avgSendTime = totalUsbSendTime / usbEchoPacketCount;
+                double avgResponseTime = totalUsbResponseTime / usbEchoPacketCount;
+
+                LogMessage("----- USB Echo mode stopped -----", usbEchoLogColor);
+                LogMessage($"Total USB packets: {usbEchoPacketCount}", usbEchoLogColor);
+                LogMessage($"  Send - Avg: {avgSendTime:F3} ms, Min: {minUsbSendTime:F3} ms, Max: {maxUsbSendTime:F3} ms", usbEchoLogColor);
+                LogMessage($"  Recv - Avg: {avgResponseTime:F3} ms, Min: {minUsbResponseTime:F3} ms, Max: {maxUsbResponseTime:F3} ms", usbEchoLogColor);
+                LogMessage("------------------------------", usbEchoLogColor);
+            }
+            else
+            {
+                LogMessage("----- USB Echo mode stopped (no packets sent) -----", usbEchoLogColor);
             }
         }
 
@@ -205,25 +260,12 @@ namespace usb_bulk_2
                 FindDevice();
         }
 
-        private void MainForm_Load(object sender, EventArgs e)
-        {
-            LogMessage("Uygulama başlatıldı");
-            LogMessage("USB cihaz aranıyor...");
-        }
-
-        private void MainForm_FormClosing(object sender, FormClosingEventArgs e)
-        {
-            StopEchoMode();
-            deviceCheckTimer?.Stop();
-            deviceCheckTimer?.Dispose();
-            echoTimer?.Dispose();
-            usbDevices?.Dispose();
-        }
-
         private void FindDevice()
         {
             try
             {
+                usbDevices = new USBDeviceList(CyConst.DEVICES_CYUSB);
+
                 foreach (CyUSBDevice dev in usbDevices)
                 {
                     if (dev.VendorID == USB_VID && dev.ProductID == USB_PID)
@@ -244,184 +286,526 @@ namespace usb_bulk_2
 
                         if (outEndpoint != null && inEndpoint != null)
                         {
-                            UpdateStatus("Cihaz bağlandı!", Color.Green);
-                            LogMessage($"Cihaz bulundu: {dev.FriendlyName}");
+                            UpdateStatus("USB Device connected!", Color.Green);
+                            LogMessage($"USB Device found: {dev.FriendlyName}");
+                            outEndpoint.TimeOut = 1000;
+                            inEndpoint.TimeOut = 1000;
                             SendVersionQuery();
                             return;
                         }
                         myDevice = null;
                     }
                 }
-                UpdateStatus("Cihaz bulunamadı!", Color.Red);
+                UpdateStatus("USB Device not found!", Color.Red);
             }
             catch (Exception ex)
             {
-                LogMessage($"Hata: {ex.Message}");
-                UpdateStatus("Hata oluştu!", Color.Red);
+                LogMessage($"Error finding USB device: {ex.Message}", errorLogColor);
+                UpdateStatus("Error finding USB device!", Color.Red);
             }
         }
 
         private void SendVersionQuery()
         {
+            if (myDevice == null || outEndpoint == null || inEndpoint == null) return;
             try
             {
                 var packet = new UsbPacket { CommandId = UsbPacket.CMD_VERSION, DataLength = 0 };
-                var response = SendPacket(packet);
+                var response = SendUsbPacket(packet); // Will use default log color
                 if (response != null)
                 {
-                    LogMessage("Versiyon sorgusu gönderildi");
+                    LogMessage("Version query sent (USB)");
                     LogMessage(response.ParseContent());
                 }
             }
             catch (Exception ex)
             {
-                LogMessage($"Versiyon sorgusu hatası: {ex.Message}");
+                LogMessage($"Version query error (USB): {ex.Message}", errorLogColor);
             }
         }
 
-        private void BtnSend_Click(object sender, EventArgs e)
+        private UsbPacket SendUsbPacket(UsbPacket packet)
         {
             if (myDevice == null || outEndpoint == null || inEndpoint == null)
             {
-                MessageBox.Show("Cihaz bağlı değil!", "Uyarı", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
+                LogMessage("USB Send Error: Device not ready.", errorLogColor);
+                return null;
             }
 
-            var selected = cmbCommands.SelectedItem as CommandItem;
-            if (selected == null) return;
-
-            // Echo string modunda start/stop işlemi
-            if (selected.CommandId == UsbPacket.CMD_ECHO_STRING)
-            {
-                if (isEchoRunning)
-                {
-                    StopEchoMode();
-                }
-                else
-                {
-                    StartEchoMode();
-                }
-                return;
-            }
-
-            // Normal komut gönderimi
-            var packet = new UsbPacket { CommandId = selected.CommandId };
-            string input = txtData.Text.Trim();
-            if (selected.CommandId == UsbPacket.CMD_WRITE)
-            {
-                if (!TryParseHex(input, out byte val)) return;
-                packet.Data[0] = val;
-                packet.DataLength = 1;
-            }
-            else if (selected.CommandId == UsbPacket.CMD_ECHO_STRING)
-            {
-                if (string.IsNullOrEmpty(input))
-                {
-                    MessageBox.Show("String girişi gerekli!", "Uyarı", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    return;
-                }
-                packet.SetDataFromText(input);
-                LogMessage($"Gönderilecek string: \"{input}\"");
-                LogMessage($"Hex: {packet.GetDataAsHexString()}");
-            }
-
-            LogMessage($"----- Paket Gönderiliyor ({selected.Name}) -----");
-            var resp = SendPacket(packet);
-            if (resp != null)
-            {
-                LogMessage(resp.ParseContent());
-                LogMessage($"Süreler: Gönderim={lastSendTime:F3} ms, Yanıt={lastResponseTime:F3} ms");
-                LogMessage($"------------------------------------------------------------------------");
-                LogMessage($"------------------------------------------------------------------------");
-                UpdateStatus($"Gönderim: {lastSendTime:F1} ms | Yanıt: {lastResponseTime:F1} ms", Color.Blue);
-            }
-            else
-            {
-                UpdateStatus("İletişim hatası!", Color.Red);
-            }
-        }
-
-        private UsbPacket SendPacket(UsbPacket packet)
-        {
             byte[] outData = packet.ToByteArray();
-            byte[] inData = new byte[64];
+            byte[] inData = new byte[inEndpoint.MaxPktSize];
             int outLen = outData.Length;
             int inLen = inData.Length;
             UsbPacket response = null;
 
             try
             {
-                var swSend = System.Diagnostics.Stopwatch.StartNew();
+                var swSend = Stopwatch.StartNew();
                 bool okS = outEndpoint.XferData(ref outData, ref outLen);
                 swSend.Stop();
-                lastSendTime = swSend.Elapsed.TotalMilliseconds;
+                lastUsbSendTime = swSend.Elapsed.TotalMilliseconds;
 
                 if (!okS)
                 {
-                    LogMessage("Hata: Veri gönderilemedi!");
+                    LogMessage("USB Error: Data send failed. Code: " + outEndpoint.LastError, errorLogColor);
                     return null;
                 }
 
-                double sendMbps = (outLen * 8.0 / 1_000_000.0) / (lastSendTime / 1000.0);
-
-                // Echo modunda her paket için detaylı log gösterme
-                if (!isEchoRunning || echoPacketCount % 50 == 0)
+                double sendMbps = (lastUsbSendTime > 0) ? (outLen * 8.0 / 1_000_000.0) / (lastUsbSendTime / 1000.0) : 0;
+                if (!isUsbEchoRunning || usbEchoPacketCount % 50 == 0 || usbEchoPacketCount == 1)
                 {
-                    LogMessage($"Gönderim: {outLen} byte -> {lastSendTime:F3} ms -> {sendMbps:F2} Mb/s");
+                    LogMessage($"USB Sent: {outLen} bytes -> {lastUsbSendTime:F3} ms -> {sendMbps:F2} Mbps", isUsbEchoRunning ? (Color?)usbEchoLogColor : null);
                 }
 
-                var swR = System.Diagnostics.Stopwatch.StartNew();
+                var swR = Stopwatch.StartNew();
                 bool okR = inEndpoint.XferData(ref inData, ref inLen);
                 swR.Stop();
-                lastResponseTime = swR.Elapsed.TotalMilliseconds;
+                lastUsbResponseTime = swR.Elapsed.TotalMilliseconds;
 
                 if (!okR)
                 {
-                    LogMessage("Hata: Yanıt alınamadı!");
+                    LogMessage("USB Error: Response receive failed. Code: " + inEndpoint.LastError, errorLogColor);
                     return null;
                 }
-
-                double recvMbps = (inLen * 8.0 / 1_000_000.0) / (lastResponseTime / 1000.0);
-
-                // Echo modunda her paket için detaylı log gösterme
-                if (!isEchoRunning || echoPacketCount % 50 == 0)
+                if (inLen == 0 && packet.CommandId == UsbPacket.CMD_ECHO_STRING)
                 {
-                    LogMessage($"Alım: {inLen} byte -> {lastResponseTime:F3} ms -> {recvMbps:F2} Mb/s");
+                    LogMessage("USB Warning: Received 0 bytes for an Echo command.", isUsbEchoRunning ? (Color?)usbEchoLogColor : (Color?)Color.Orange);
                 }
 
-                response = UsbPacket.FromByteArray(inData);
+
+                double recvMbps = (lastUsbResponseTime > 0 && inLen > 0) ? (inLen * 8.0 / 1_000_000.0) / (lastUsbResponseTime / 1000.0) : 0;
+                if (!isUsbEchoRunning || usbEchoPacketCount % 50 == 0 || usbEchoPacketCount == 1)
+                {
+                    LogMessage($"USB Received: {inLen} bytes -> {lastUsbResponseTime:F3} ms -> {recvMbps:F2} Mbps", isUsbEchoRunning ? (Color?)usbEchoLogColor : null);
+                }
+
+                byte[] actualInData = new byte[inLen];
+                Array.Copy(inData, actualInData, inLen);
+                response = UsbPacket.FromByteArray(actualInData);
             }
             catch (Exception ex)
             {
-                LogMessage($"USB iletişim hatası: {ex.Message}");
+                LogMessage($"USB communication error: {ex.Message}", errorLogColor);
+                if (ex.InnerException != null) LogMessage($"Inner Exception: {ex.InnerException.Message}", errorLogColor);
             }
 
             return response;
         }
 
+        private void USBDeviceAttached(object sender, EventArgs e) => FindDevice();
+        private void USBDeviceRemoved(object sender, EventArgs e)
+        {
+            bool deviceReallyRemoved = true;
+            if (myDevice != null)
+            {
+                USBDeviceList currentDevices = new USBDeviceList(CyConst.DEVICES_CYUSB);
+                deviceReallyRemoved = !currentDevices.Cast<CyUSBDevice>().Any(d => d.VendorID == myDevice.VendorID && d.ProductID == myDevice.ProductID && d.SerialNumber == myDevice.SerialNumber);
+            }
+
+            if (myDevice != null && deviceReallyRemoved)
+            {
+                myDevice = null;
+                outEndpoint = null;
+                inEndpoint = null;
+
+                if (isUsbEchoRunning)
+                {
+                    StopUsbEchoMode();
+                }
+
+                UpdateStatus("USB Device removed!", Color.Red);
+                LogMessage("USB Device removed");
+            }
+        }
+        #endregion
+
+        #region UART İletişimi
+        private void SetupUart()
+        {
+            string[] portNames = SerialPort.GetPortNames();
+            if (portNames.Length > 0)
+            {
+                selectedComPort = "COM9";
+
+                if (!portNames.Contains(selectedComPort))
+                {
+                    LogMessage($"UART: Specified COM port {selectedComPort} not found. Available: {string.Join(", ", portNames)}", Color.Orange);
+                    if (portNames.Length > 0) selectedComPort = portNames[0];
+                    else
+                    {
+                        LogMessage("UART: No COM ports available to fall back to.", Color.Orange);
+                        UpdateStatus("UART: No COM ports available.", Color.Orange);
+                        return;
+                    }
+                    LogMessage($"UART: Falling back to {selectedComPort}.");
+                }
+
+                uartPort = new SerialPort(selectedComPort, UART_BAUD_RATE, Parity.None, 8, StopBits.One);
+                uartPort.ReadTimeout = 200;
+                uartPort.WriteTimeout = 200;
+                LogMessage($"UART: Using {selectedComPort} at {UART_BAUD_RATE} baud.");
+            }
+            else
+            {
+                LogMessage("UART: No COM ports found.", Color.Orange);
+                UpdateStatus("UART: No COM ports available.", Color.Orange);
+            }
+        }
+
+
+        private void SetupUartEchoTimer()
+        {
+            uartEchoTimer = new Timer { Interval = 100 };
+            uartEchoTimer.Tick += UartEchoTimer_Tick;
+        }
+
+        private void UartEchoTimer_Tick(object sender, EventArgs e)
+        {
+            if (!isUartEchoRunning) return;
+            SendUartEchoPacket();
+        }
+
+        private void SendUartEchoPacket()
+        {
+            if (uartPort == null || !uartPort.IsOpen)
+            {
+                if (isUartEchoRunning)
+                {
+                    LogMessage("UART Echo Error: Port not open. Stopping UART echo.", errorLogColor);
+                    StopUartEchoMode();
+                }
+                return;
+            }
+
+            string textToSend = txtData.Text.Trim();
+            if (string.IsNullOrEmpty(textToSend))
+            {
+                textToSend = "UART Echo Test";
+            }
+
+            try
+            {
+                Stopwatch swSend = Stopwatch.StartNew();
+                uartPort.Write(textToSend);
+                swSend.Stop();
+                lastUartSendTime = swSend.Elapsed.TotalMilliseconds;
+                double uartSentBytes = Encoding.ASCII.GetByteCount(textToSend);
+                double uartSendMbps = (lastUartSendTime > 0) ? (uartSentBytes * 8.0 / 1_000_000.0) / (lastUartSendTime / 1000.0) : 0;
+
+                if (uartEchoPacketCount % 50 == 0 || uartEchoPacketCount == 0) // İlk paket ve periyodik
+                {
+                    LogMessage($"UART Sent: {uartSentBytes} bytes -> {lastUartSendTime:F3} ms -> {uartSendMbps:F2} Mbps", uartEchoLogColor);
+                }
+
+
+                byte[] buffer = new byte[Encoding.ASCII.GetByteCount(textToSend)];
+                int bytesRead = 0;
+                Stopwatch swRecv = Stopwatch.StartNew();
+                try
+                {
+                    int totalBytesRead = 0;
+                    uartPort.ReadTimeout = 100;
+
+                    while (totalBytesRead < buffer.Length && swRecv.ElapsedMilliseconds < 200)
+                    {
+                        if (uartPort.BytesToRead > 0)
+                        {
+                            int currentRead = uartPort.Read(buffer, totalBytesRead, Math.Min(uartPort.BytesToRead, buffer.Length - totalBytesRead));
+                            totalBytesRead += currentRead;
+                        }
+                        else
+                        {
+                            System.Threading.Thread.Sleep(1);
+                        }
+                    }
+                    bytesRead = totalBytesRead;
+                }
+                catch (TimeoutException)
+                {
+                    // Timeout logu aşağıda genel hata/uyuşmazlık kısmında ele alınabilir.
+                }
+                swRecv.Stop();
+                lastUartResponseTime = swRecv.Elapsed.TotalMilliseconds;
+                double uartReceivedBytes = bytesRead;
+                double uartRecvMbps = (lastUartResponseTime > 0 && uartReceivedBytes > 0) ? (uartReceivedBytes * 8.0 / 1_000_000.0) / (lastUartResponseTime / 1000.0) : 0;
+
+
+                string receivedText = Encoding.ASCII.GetString(buffer, 0, bytesRead);
+
+                if (bytesRead > 0 && textToSend.Equals(receivedText))
+                {
+                    uartEchoPacketCount++;
+                    totalUartSendTime += lastUartSendTime;
+                    totalUartResponseTime += lastUartResponseTime;
+
+                    minUartSendTime = Math.Min(minUartSendTime, lastUartSendTime);
+                    maxUartSendTime = Math.Max(maxUartSendTime, lastUartSendTime);
+                    minUartResponseTime = Math.Min(minUartResponseTime, lastUartResponseTime);
+                    maxUartResponseTime = Math.Max(maxUartResponseTime, lastUartResponseTime);
+
+                    double avgSendTime = totalUartSendTime / uartEchoPacketCount;
+                    double avgResponseTime = totalUartResponseTime / uartEchoPacketCount;
+
+                    if (isUartEchoRunning)
+                    {
+                        UpdateStatus(
+                         $"UART Echo: #{uartEchoPacketCount} | Avg: {avgSendTime:F1}/{avgResponseTime:F1} ms | Min: {minUartSendTime:F1}/{minUartResponseTime:F1} ms | Max: {maxUartSendTime:F1}/{maxUartResponseTime:F1} ms",
+                         uartEchoLogColor); // Status bar color
+                    }
+
+                    if (uartEchoPacketCount % 50 == 0 || uartEchoPacketCount == 1) // İlk paket ve periyodik (başarılı alım için)
+                    {
+                        LogMessage($"UART Received: {uartReceivedBytes} bytes -> {lastUartResponseTime:F3} ms -> {uartRecvMbps:F2} Mbps (Match)", uartEchoLogColor);
+                    }
+
+                    if (uartEchoPacketCount % 50 == 0 && uartEchoPacketCount > 1) // Periyodik istatistik (ilk paket hariç)
+                    {
+                        LogMessage($"UART Echo Stats (#{uartEchoPacketCount}):", uartEchoLogColor);
+                        LogMessage($"  Send - Avg: {avgSendTime:F3} ms, Min: {minUartSendTime:F3} ms, Max: {maxUartSendTime:F3} ms", uartEchoLogColor);
+                        LogMessage($"  Recv - Avg: {avgResponseTime:F3} ms, Min: {minUartResponseTime:F3} ms, Max: {maxUartResponseTime:F3} ms", uartEchoLogColor);
+                    }
+                }
+                else
+                {
+                    if (uartEchoPacketCount % 20 == 0 || uartEchoPacketCount == 0 || bytesRead < uartSentBytes) // Hata/uyuşmazlık durumunu daha sık logla
+                    {
+                        string errorMsg = $"UART Echo Mismatch/Timeout: Sent='{textToSend}' ({uartSentBytes}B), Recv='{receivedText}' ({uartReceivedBytes}B).";
+                        errorMsg += $" Times: Send={lastUartSendTime:F1}ms, Recv={lastUartResponseTime:F1}ms.";
+                        if (uartReceivedBytes > 0) errorMsg += $" Recv Speed: {uartRecvMbps:F2} Mbps.";
+                        LogMessage(errorMsg, errorLogColor);
+                    }
+                }
+            }
+            catch (InvalidOperationException ioe)
+            {
+                LogMessage($"UART Echo Error (Invalid Operation): {ioe.Message}. Stopping UART echo.", errorLogColor);
+                StopUartEchoMode();
+            }
+            catch (Exception ex)
+            {
+                LogMessage($"UART Echo Error: {ex.Message}. Stopping UART echo.", errorLogColor);
+                StopUartEchoMode();
+            }
+        }
+
+
+        private void StartUartEchoMode()
+        {
+            if (isUartEchoRunning) return;
+
+            if (uartPort == null)
+            {
+                MessageBox.Show("No COM port configured for UART Echo!", "UART Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                SetupUart();
+                if (uartPort == null) return;
+            }
+
+            try
+            {
+                if (!uartPort.IsOpen)
+                {
+                    uartPort.Open();
+                    LogMessage($"UART Port {uartPort.PortName} opened for echo.");
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Failed to open COM port {uartPort.PortName}: {ex.Message}", "UART Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                LogMessage($"UART Error: Could not open port {uartPort.PortName} - {ex.Message}", errorLogColor);
+                return;
+            }
+
+            isUartEchoRunning = true;
+            uartEchoPacketCount = 0; // Sıfırlama burada yapılmalı
+            totalUartSendTime = 0;
+            totalUartResponseTime = 0;
+            minUartSendTime = double.MaxValue;
+            maxUartSendTime = 0;
+            minUartResponseTime = double.MaxValue;
+            maxUartResponseTime = 0;
+            uartReceiveBuffer.Clear();
+
+            var currentSelection = cmbCommands.SelectedItem as CommandItem;
+            if (currentSelection != null && currentSelection.CommandId == UsbPacket.CMD_UART_ECHO_STRING)
+            {
+                UpdateButtonText();
+            }
+
+            LogMessage("----- UART Echo mode started -----", uartEchoLogColor);
+            string initialData = txtData.Text.Trim();
+            if (string.IsNullOrEmpty(initialData)) initialData = "UART Echo Test";
+            LogMessage($"UART Echo string: \"{initialData}\" on {uartPort.PortName}", uartEchoLogColor);
+            uartEchoTimer.Start();
+        }
+
+        private void StopUartEchoMode()
+        {
+            if (!isUartEchoRunning) return;
+
+            uartEchoTimer.Stop();
+            isUartEchoRunning = false;
+
+            var currentSelection = cmbCommands.SelectedItem as CommandItem;
+            if (currentSelection != null && currentSelection.CommandId == UsbPacket.CMD_UART_ECHO_STRING)
+            {
+                UpdateButtonText();
+            }
+
+            if (uartEchoPacketCount > 0)
+            {
+                double avgSendTime = totalUartSendTime / uartEchoPacketCount;
+                double avgResponseTime = totalUartResponseTime / uartEchoPacketCount;
+
+                LogMessage("----- UART Echo mode stopped -----", uartEchoLogColor);
+                LogMessage($"Total UART packets: {uartEchoPacketCount}", uartEchoLogColor);
+                LogMessage($"  Send - Avg: {avgSendTime:F3} ms, Min: {minUartSendTime:F3} ms, Max: {maxUartSendTime:F3} ms", uartEchoLogColor);
+                LogMessage($"  Recv - Avg: {avgResponseTime:F3} ms, Min: {minUartResponseTime:F3} ms, Max: {maxUartResponseTime:F3} ms", uartEchoLogColor);
+                LogMessage("------------------------------", uartEchoLogColor);
+            }
+            else
+            {
+                LogMessage("----- UART Echo mode stopped (no packets sent) -----", uartEchoLogColor);
+            }
+        }
+
+        #endregion
+
+        private void MainForm_Load(object sender, EventArgs e)
+        {
+            LogMessage("Application started");
+            LogMessage("Searching for USB device...");
+        }
+
+        private void MainForm_FormClosing(object sender, FormClosingEventArgs e)
+        {
+            StopUsbEchoMode();
+            StopUartEchoMode();
+
+            deviceCheckTimer?.Stop();
+            deviceCheckTimer?.Dispose();
+            usbEchoTimer?.Dispose();
+            uartEchoTimer?.Dispose();
+
+            usbDevices?.Dispose();
+
+            if (uartPort != null)
+            {
+                if (uartPort.IsOpen)
+                {
+                    uartPort.Close();
+                }
+                uartPort.Dispose();
+            }
+        }
+
+        private void BtnSend_Click(object sender, EventArgs e)
+        {
+            var selected = cmbCommands.SelectedItem as CommandItem;
+            if (selected == null) return;
+
+            if (selected.CommandId == UsbPacket.CMD_ECHO_STRING)
+            {
+                if (isUsbEchoRunning) StopUsbEchoMode();
+                else StartUsbEchoMode();
+            }
+            else if (selected.CommandId == UsbPacket.CMD_UART_ECHO_STRING)
+            {
+                if (isUartEchoRunning) StopUartEchoMode();
+                else StartUartEchoMode();
+            }
+            else
+            {
+                if (isUsbEchoRunning) StopUsbEchoMode();
+                if (isUartEchoRunning) StopUartEchoMode();
+
+                if (myDevice == null || outEndpoint == null || inEndpoint == null)
+                {
+                    MessageBox.Show("USB device not connected for this command!", "USB Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                var packet = new UsbPacket { CommandId = selected.CommandId };
+                string input = txtData.Text.Trim();
+
+                if (selected.CommandId == UsbPacket.CMD_WRITE)
+                {
+                    if (!TryParseHex(input, out byte val)) return;
+                    packet.Data[0] = val;
+                    packet.DataLength = 1;
+                }
+
+                LogMessage($"----- USB Packet Sending ({selected.Name}) -----");
+                var resp = SendUsbPacket(packet); // Uses default log color here
+                if (resp != null)
+                {
+                    LogMessage(resp.ParseContent());
+                    LogMessage($"USB Timings: Send={lastUsbSendTime:F3} ms, Response={lastUsbResponseTime:F3} ms");
+                    LogMessage($"------------------------------------------------------------------------");
+                    UpdateStatus($"USB Send: {lastUsbSendTime:F1} ms | USB Response: {lastUsbResponseTime:F1} ms", Color.Blue);
+                }
+                else
+                {
+                    UpdateStatus("USB Communication error!", Color.Red);
+                }
+            }
+        }
+
         private bool TryParseHex(string input, out byte value)
         {
             value = 0;
+            if (string.IsNullOrWhiteSpace(input))
+            {
+                MessageBox.Show("Hex input cannot be empty for Write command.", "Input Error",
+                           MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return false;
+            }
             if (input.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
                 input = input.Substring(2);
             if (byte.TryParse(input, System.Globalization.NumberStyles.HexNumber,
                                System.Globalization.CultureInfo.InvariantCulture, out value))
                 return true;
-            MessageBox.Show("Geçersiz hex değeri! Örnek: 0xA5 veya A5", "Hata",
+            MessageBox.Show("Invalid hex value! Example: 0xA5 or A5", "Error",
                             MessageBoxButtons.OK, MessageBoxIcon.Error);
             return false;
         }
 
-        private void LogMessage(string message)
+        private void LogMessage(string message, Color? textColor = null)
         {
             if (txtLog.InvokeRequired)
-                txtLog.Invoke(new Action<string>(LogMessage), message);
+            {
+                txtLog.Invoke(new Action(() =>
+                {
+                    Color defaultLogColor = txtLog.ForeColor;
+                    if (textColor.HasValue)
+                    {
+                        txtLog.SelectionColor = textColor.Value;
+                    }
+                    else
+                    {
+                        txtLog.SelectionColor = defaultLogColor;
+                    }
+                    txtLog.AppendText($"[{DateTime.Now:HH:mm:ss.fff}] {message}{Environment.NewLine}");
+                    txtLog.SelectionColor = defaultLogColor; // Reset to default for the next log
+                    txtLog.ScrollToCaret();
+                }));
+            }
             else
             {
-                txtLog.AppendText($"[{DateTime.Now:HH:mm:ss.fff}] {message}\r\n");
+                Color defaultLogColor = txtLog.ForeColor;
+                if (textColor.HasValue)
+                {
+                    txtLog.SelectionColor = textColor.Value;
+                }
+                else
+                {
+                    txtLog.SelectionColor = defaultLogColor;
+                }
+                txtLog.AppendText($"[{DateTime.Now:HH:mm:ss.fff}] {message}{Environment.NewLine}");
+                txtLog.SelectionColor = defaultLogColor; // Reset to default for the next log
                 txtLog.ScrollToCaret();
             }
         }
+
 
         private void UpdateStatus(string message, Color color)
         {
@@ -432,33 +816,6 @@ namespace usb_bulk_2
                 toolStripStatusLabel1.Text = message;
                 toolStripStatusLabel1.ForeColor = color;
             }
-        }
-
-        private void USBDeviceAttached(object sender, EventArgs e) => FindDevice();
-        private void USBDeviceRemoved(object sender, EventArgs e)
-        {
-            if (myDevice != null && !DeviceExistsInList(myDevice))
-            {
-                myDevice = null;
-                outEndpoint = inEndpoint = null;
-
-                // Echo modu çalışıyorsa durdur
-                if (isEchoRunning)
-                {
-                    StopEchoMode();
-                }
-
-                UpdateStatus("Cihaz çıkarıldı!", Color.Red);
-                LogMessage("Cihaz çıkarıldı");
-            }
-        }
-
-        private bool DeviceExistsInList(CyUSBDevice device)
-        {
-            foreach (var d in usbDevices)
-                if (d == device)
-                    return true;
-            return false;
         }
     }
 

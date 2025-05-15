@@ -16,7 +16,9 @@ namespace usb_bulk_2
         public const byte CMD_STATUS = 0x03;
         public const byte CMD_RESET = 0x04;
         public const byte CMD_VERSION = 0x05;
-        public const byte CMD_ECHO_STRING = 0x06; 
+        public const byte CMD_ECHO_STRING = 0x06;
+        public const byte CMD_UART_ECHO_STRING = 0xF0; // UART Echo için özel komut ID'si (UI için)
+
 
         // Sonuç kodları
         public const byte RESULT_OK = 0x00;
@@ -134,7 +136,6 @@ namespace usb_bulk_2
         }
 
         // Komut adını al
-        // Komut adını al
         public static string GetCommandName(byte commandId)
         {
             switch (commandId)
@@ -144,7 +145,8 @@ namespace usb_bulk_2
                 case CMD_STATUS: return "Status";
                 case CMD_RESET: return "Reset";
                 case CMD_VERSION: return "Version";
-                case CMD_ECHO_STRING: return "String Echo";
+                case CMD_ECHO_STRING: return "USB String Echo"; // Adı daha açıklayıcı hale getirildi
+                case CMD_UART_ECHO_STRING: return "UART String Echo";
                 default: return $"Bilinmeyen (0x{commandId:X2})";
             }
         }
@@ -162,8 +164,6 @@ namespace usb_bulk_2
             }
         }
 
-        // Paket içeriğini oku ve açıkla
-        // Paket içeriğini oku ve açıkla
         public string ParseContent()
         {
             StringBuilder sb = new StringBuilder();
@@ -207,7 +207,7 @@ namespace usb_bulk_2
                         }
                         break;
 
-                    case CMD_ECHO_STRING:
+                    case CMD_ECHO_STRING: // USB Echo için
                         if (DataLength > 1)
                         {
                             byte[] stringData = new byte[DataLength - 1];
@@ -217,13 +217,14 @@ namespace usb_bulk_2
                             sb.AppendLine($"Hex: {BitConverter.ToString(stringData).Replace("-", " ")}");
                         }
                         break;
+                        // CMD_UART_ECHO_STRING için özel bir parse logic'i UsbPacket içinde olmaz,
+                        // çünkü bu paket yapısı USB için. UART yanıtı MainForm'da işlenir.
                 }
             }
 
             return sb.ToString();
         }
 
-        // UsbPacket.cs sınıfına eklenecek metotlar
         public void SetDataFromText(string text)
         {
             if (string.IsNullOrEmpty(text))
@@ -261,7 +262,5 @@ namespace usb_bulk_2
 
             return sb.ToString();
         }
-
-
     }
 }
