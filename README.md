@@ -1,4 +1,4 @@
-# usb bulk transfer and uart
+# usb bulk transfer and uart (CY8C5888LTI-LP097)
 
 This C# Windows Forms application is an interface and test tool developed to test, verify and measure the performance of bidirectional data communication with a PSoC device both over USB (with bulk transfer method) and UART (serial port/COM port).
 
