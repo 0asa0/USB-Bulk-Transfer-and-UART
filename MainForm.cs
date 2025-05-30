@@ -4,9 +4,10 @@ using System.Drawing;
 using System.Text;
 using System.Windows.Forms;
 using CyUSB;
-using System.IO.Ports; // UART için eklendi
-using System.Diagnostics; // Stopwatch için eklendi
-using System.Linq; // COM portlarını bulmak için eklendi
+using System.IO.Ports; 
+using System.Diagnostics; 
+using System.Linq;
+using System.Management;
 
 namespace usb_bulk_2
 {
@@ -34,12 +35,11 @@ namespace usb_bulk_2
         private const int USB_VID = 0x04B4;
         private const int USB_PID = 0xF001;
 
-        // UART Değişkenleri
         private SerialPort uartPort;
         private Timer uartEchoTimer;
         private bool isUartEchoRunning = false;
-        private string selectedComPort = null; // Seçilen veya bulunan COM portu
-        private const int UART_BAUD_RATE = 115200; // Varsayılan baud rate
+        private string selectedComPort = null; 
+        private const int UART_BAUD_RATE = 115200;
 
         private double lastUartSendTime = 0;
         private double lastUartResponseTime = 0;
@@ -66,8 +66,8 @@ namespace usb_bulk_2
             SetupControls();
             SetupUsbMonitoring();
             SetupUsbEchoTimer();
-            SetupUart(); // UART kurulumu
-            SetupUartEchoTimer(); // UART echo timer kurulumu
+            SetupUart(); 
+            SetupUartEchoTimer();
         }
 
         private void SetupControls()
@@ -78,7 +78,7 @@ namespace usb_bulk_2
             cmbCommands.Items.Add(new CommandItem("Reset", UsbPacket.CMD_RESET));
             cmbCommands.Items.Add(new CommandItem("Version", UsbPacket.CMD_VERSION));
             cmbCommands.Items.Add(new CommandItem("USB String Echo", UsbPacket.CMD_ECHO_STRING));
-            cmbCommands.Items.Add(new CommandItem("UART String Echo", UsbPacket.CMD_UART_ECHO_STRING)); // UART Echo eklendi
+            cmbCommands.Items.Add(new CommandItem("UART String Echo", UsbPacket.CMD_UART_ECHO_STRING)); 
             cmbCommands.SelectedIndex = 0;
 
             btnSend.Click += BtnSend_Click;
@@ -98,11 +98,11 @@ namespace usb_bulk_2
             var selected = cmbCommands.SelectedItem as CommandItem;
             if (selected != null)
             {
-                if (selected.CommandId == UsbPacket.CMD_ECHO_STRING) // USB Echo
+                if (selected.CommandId == UsbPacket.CMD_ECHO_STRING) 
                 {
                     btnSend.Text = isUsbEchoRunning ? "Stop USB Echo" : "Start USB Echo";
                 }
-                else if (selected.CommandId == UsbPacket.CMD_UART_ECHO_STRING) // UART Echo
+                else if (selected.CommandId == UsbPacket.CMD_UART_ECHO_STRING) 
                 {
                     btnSend.Text = isUartEchoRunning ? "Stop UART Echo" : "Start UART Echo";
                 }
@@ -418,7 +418,11 @@ namespace usb_bulk_2
             }
         }
         #endregion
-
+        /// <summary>
+        /// ///////////////////////////////////////////////////////////////////////////////////////////////////////
+        /// UART
+        /// /////////////////////////////////////////////////////////////////////////////////////////////////////////
+        /// </summary>
         #region UART İletişimi
         private void SetupUart()
         {
