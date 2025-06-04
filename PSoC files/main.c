@@ -1,6 +1,7 @@
 /*main.c*/
 #include <project.h>
 #include "UsbPacket.h" 
+#include "can_help.h"
 
 /* Buffer boyutları */
 #define CUSTOM_BULK_BUFFER_LEN 64
@@ -11,9 +12,18 @@ uint8 custom_inBuffer[CUSTOM_BULK_BUFFER_LEN];  /* Host'a (Custom Bulk) gönderi
 #define UART_BUFFER_SIZE 64 // CDC transferleri genellikle 64 byte paketler kullanır
 uint8 uart_rx_buffer[UART_BUFFER_SIZE];
 
+/* CAN için Buffer Boyutları */
+#define CAN_BULK_BUFFER_LEN 64
+uint8 can_outBuffer[CAN_BULK_BUFFER_LEN]; /* Host'tan (CAN Bulk) alınacak veri */
+uint8 can_inBuffer[CAN_BULK_BUFFER_LEN];  /* Host'a (CAN Bulk) gönderilecek veri */
+
 /*(Bulk için) */
 UsbPacket rxPacket;
 UsbPacket txPacket;
+
+/* CAN Message Buffer */
+CAN_Message_t can_rx_message;
+CAN_Message_t can_tx_message;
 
 /* Cihaz versiyonu Bulk için */
 const uint8 DEVICE_VERSION[3] = {1, 0, 0}; 
@@ -121,10 +131,21 @@ void BytesToPacket(uint8* bytes, UsbPacket* packet) {
                      ((uint16)bytes[4 + packet->dataLength + 1] << 8);
 }
 
-
+CY_ISR(isr_uart_rx_Handler){
+    uint8 received_char;
+    
+    while(UART_GetRxBufferSize > 0){
+        
+        received_char = UART_ReadRxData();
+        
+        UART_WriteTxData(received_char);
+    
+    }
+}
 
 int main() {
     uint16 uart_count; // USBUART'tan okunan byte sayısı
+    uint16 can_bulk_len; // CAN Bulk'tan okunan byte sayısı
 
     CyGlobalIntEnable;
     
@@ -139,16 +160,28 @@ int main() {
     /* OUT EP Host'tan PSoC'ye Bulk için */
     USB_EnableOutEP(1);
     
+    /* CAN OUT EP Host'tan PSoC'ye CAN Bulk için - EP7 */
+    USB_EnableOutEP(7);
+    
     /* Paketleri başlat Bulk */
     InitPacket(&rxPacket);
     InitPacket(&txPacket);
     
+    UART_Start();
+    isr_uart_rx_StartEx(isr_uart_rx_Handler);
+    
+    /* CAN başlatma */
+    CAN_Start();
+    
+    /* CAN interrupt'ı başlat - can_help.c'deki CAN_ISR_Handler fonksiyonunu kullan */
+    CyIntSetVector(CAN_ISR_NUMBER, CAN_ISR_Handler);
+    CyIntEnable(CAN_ISR_NUMBER);
     
 
     for(;;) {
         /* Bulk Transfer */
         if (USB_GetEPState(1) == USB_OUT_BUFFER_FULL) { // EP1'den (Bulk OUT) veri geldiyse
-            uint16 custom_bulk_len; // Okunan byte sayısı
+            uint16 custom_bulk_len; 
             custom_bulk_len = USB_ReadOutEP(1, custom_outBuffer, CUSTOM_BULK_BUFFER_LEN);
             
             BytesToPacket(custom_outBuffer, &rxPacket);
@@ -160,6 +193,25 @@ int main() {
 
             USB_EnableOutEP(1);
         }
+        
+        /* CAN Bulk Transfer - USB'den CAN'a mesaj gönderme */
+        if (USB_GetEPState(7) == USB_OUT_BUFFER_FULL) { // EP7'den (CAN Bulk OUT) veri geldiyse
+            can_bulk_len = USB_ReadOutEP(7, can_outBuffer, CAN_BULK_BUFFER_LEN);
+            
+            /* USB'den gelen veriyi CAN mesajına dönüştür ve gönder */
+            CAN_Process_USB_Message(can_outBuffer, can_bulk_len);
+            
+            USB_EnableOutEP(7);
+        }
+        
+        /* CAN'dan mesaj alma ve USB'ye gönderme */
+        if (CAN_Receive_Message(&can_rx_message)) {
+            /* CAN mesajını USB formatına dönüştür */
+            uint16 usb_msg_len = CAN_Prepare_USB_Message(&can_rx_message, can_inBuffer);
+            
+            /* Veriyi host'a gönder - EP6 CAN bulk IN endpoint */
+            USB_LoadInEP(6, can_inBuffer, usb_msg_len);
+        }
 
         /* USB UART haberleşme */
         
@@ -169,6 +221,7 @@ int main() {
             
             if (USB_GetConfiguration()) {
                  USB_EnableOutEP(1); // Custom Bulk OUT EP
+                 USB_EnableOutEP(7); // CAN Bulk OUT EP
             }
         }
         
