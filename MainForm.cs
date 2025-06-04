@@ -1,61 +1,81 @@
-﻿using System;
+﻿// MainForm.cs
+using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Text;
 using System.Windows.Forms;
 using CyUSB;
-using System.IO.Ports; 
-using System.Diagnostics; 
+using System.IO.Ports;
+using System.Diagnostics;
 using System.Linq;
-using System.Management;
+using System.Threading.Tasks;
+using System.Globalization;
 
 namespace usb_bulk_2
 {
     public partial class MainForm : Form
     {
-        // USB Değişkenleri
         private USBDeviceList usbDevices;
-        private CyUSBDevice myDevice;
+
+        // Ayrı cihazlar veya arayüzler için CyUSBDevice nesneleri
+        private CyUSBDevice customBulkDevice; // "asa usb bulk" için
+        private CyUSBDevice canDevice;        // "asa usb CAN" için
+
+        // Custom Bulk için Endpointler
+        private CyBulkEndPoint customOutEndpoint; // EP1 (0x01)
+        private CyBulkEndPoint customInEndpoint;  // EP2 (0x82)
+
+        // CAN için Endpointler
+        private CyBulkEndPoint canOutEndpoint;    // EP7 (0x07)
+        private CyBulkEndPoint canInEndpoint;     // EP6 (0x86)
+
+        // SendUsbPacket'in kullandığı genel endpointler (customBulkDevice'a ait olacak)
         private CyBulkEndPoint outEndpoint;
         private CyBulkEndPoint inEndpoint;
-        private Timer deviceCheckTimer;
-        private Timer usbEchoTimer;
-        private bool isUsbEchoRunning = false;
 
-        private double lastUsbSendTime = 0;
-        private double lastUsbResponseTime = 0;
-        private int usbEchoPacketCount = 0;
-        private double totalUsbSendTime = 0;
-        private double totalUsbResponseTime = 0;
-        private double minUsbSendTime = double.MaxValue;
-        private double maxUsbSendTime = 0;
-        private double minUsbResponseTime = double.MaxValue;
-        private double maxUsbResponseTime = 0;
+        private System.Windows.Forms.Timer deviceCheckTimer;
+
+        // ... (Diğer değişken tanımlamaları aynı kalabilir: USB Echo, UART Echo, CanHandler, Log Colors vb.) ...
+        private System.Windows.Forms.Timer usbEchoTimer;
+        private bool isUsbEchoRunning = false;
+        private double lastUsbSendTime, lastUsbResponseTime;
+        private int usbEchoPacketCount;
+        private double totalUsbSendTime, totalUsbResponseTime;
+        private double minUsbSendTime = double.MaxValue, maxUsbSendTime = 0;
+        private double minUsbResponseTime = double.MaxValue, maxUsbResponseTime = 0;
 
         private const int USB_VID = 0x04B4;
         private const int USB_PID = 0xF001;
 
+        private const string CUSTOM_BULK_FRIENDLY_NAME_PART = "asa usb bulk"; // PSoC'taki isme göre ayarlayın
+        private const string CAN_FRIENDLY_NAME_PART = "asa usb CAN";
+
+
+        // UART Echo
         private SerialPort uartPort;
-        private Timer uartEchoTimer;
+        private System.Windows.Forms.Timer uartEchoTimer;
         private bool isUartEchoRunning = false;
-        private string selectedComPort = null; 
+        private string selectedComPort = "COM9";
         private const int UART_BAUD_RATE = 115200;
+        private double lastUartSendTime, lastUartResponseTime;
+        private int uartEchoPacketCount;
+        private double totalUartSendTime, totalUartResponseTime;
+        private double minUartSendTime = double.MaxValue, maxUartSendTime = 0;
+        private double minUartResponseTime = double.MaxValue, maxUartResponseTime = 0;
 
-        private double lastUartSendTime = 0;
-        private double lastUartResponseTime = 0;
-        private int uartEchoPacketCount = 0;
-        private double totalUartSendTime = 0;
-        private double totalUartResponseTime = 0;
-        private double minUartSendTime = double.MaxValue;
-        private double maxUartSendTime = 0;
-        private double minUartResponseTime = double.MaxValue;
-        private double maxUartResponseTime = 0;
-        private StringBuilder uartReceiveBuffer = new StringBuilder();
+        // CAN Interface
+        private CanHandler _canHandler;
+        private bool isCanUiPaused = false;
 
-        // Log renkleri
+        // Log Colors
         private readonly Color usbEchoLogColor = Color.DarkCyan;
         private readonly Color uartEchoLogColor = Color.DarkMagenta;
+        private readonly Color canRxLogColor = Color.DarkGreen;
+        private readonly Color canTxLogColor = Color.DarkBlue;
         private readonly Color errorLogColor = Color.OrangeRed;
+        private readonly Color statusOkColor = Color.Green;
+        private readonly Color statusWarnColor = Color.DarkOrange;
+        private readonly Color statusErrorColor = Color.Red;
 
 
         public MainForm()
@@ -63,270 +83,364 @@ namespace usb_bulk_2
             InitializeComponent();
             this.Load += MainForm_Load;
             this.FormClosing += MainForm_FormClosing;
-            SetupControls();
+
+            SetupCustomControls();
+            SetupCanInterfaceLogic();
             SetupUsbMonitoring();
-            SetupUsbEchoTimer();
-            SetupUart(); 
-            SetupUartEchoTimer();
+            SetupEchoTimers();
+            SetupUartCommunication();
         }
 
-        private void SetupControls()
+        // ... (SetupCustomControls, ListViewCan_DoubleClick, SetupEchoTimers, UpdateButtonText, SetupCanInterfaceLogic aynı kalabilir) ...
+        // Sadece SetupCustomControls içindeki örnek CommandItem'ların UsbPacket.cs dosyanızda tanımlı olduğundan emin olun.
+        private void SetupCustomControls()
         {
-            cmbCommands.Items.Add(new CommandItem("Read", UsbPacket.CMD_READ));
-            cmbCommands.Items.Add(new CommandItem("Write", UsbPacket.CMD_WRITE));
-            cmbCommands.Items.Add(new CommandItem("Status", UsbPacket.CMD_STATUS));
-            cmbCommands.Items.Add(new CommandItem("Reset", UsbPacket.CMD_RESET));
-            cmbCommands.Items.Add(new CommandItem("Version", UsbPacket.CMD_VERSION));
-            cmbCommands.Items.Add(new CommandItem("USB String Echo", UsbPacket.CMD_ECHO_STRING));
-            cmbCommands.Items.Add(new CommandItem("UART String Echo", UsbPacket.CMD_UART_ECHO_STRING)); 
-            cmbCommands.SelectedIndex = 0;
-
-            btnSend.Click += BtnSend_Click;
-            txtLog.Font = new Font("Consolas", 9F);
-            txtLog.ReadOnly = true;
-
-            cmbCommands.SelectedIndexChanged += CmbCommands_SelectedIndexChanged;
-        }
-
-        private void CmbCommands_SelectedIndexChanged(object sender, EventArgs e)
-        {
-            UpdateButtonText();
-        }
-
-        private void UpdateButtonText()
-        {
-            var selected = cmbCommands.SelectedItem as CommandItem;
-            if (selected != null)
+            if (typeof(MainForm).Assembly.GetType("usb_bulk_2.UsbPacket") != null)
             {
-                if (selected.CommandId == UsbPacket.CMD_ECHO_STRING) 
-                {
-                    btnSend.Text = isUsbEchoRunning ? "Stop USB Echo" : "Start USB Echo";
-                }
-                else if (selected.CommandId == UsbPacket.CMD_UART_ECHO_STRING) 
-                {
-                    btnSend.Text = isUartEchoRunning ? "Stop UART Echo" : "Start UART Echo";
-                }
-                else
-                {
-                    btnSend.Text = "Send";
-                }
+                cmbCommands.Items.Add(new CommandItem("Read", UsbPacket.CMD_READ));
+                cmbCommands.Items.Add(new CommandItem("Write", UsbPacket.CMD_WRITE));
+                cmbCommands.Items.Add(new CommandItem("Status", UsbPacket.CMD_STATUS));
+                cmbCommands.Items.Add(new CommandItem("Reset", UsbPacket.CMD_RESET));
+                cmbCommands.Items.Add(new CommandItem("Version", UsbPacket.CMD_VERSION));
+                cmbCommands.Items.Add(new CommandItem("USB String Echo", UsbPacket.CMD_ECHO_STRING));
+                cmbCommands.Items.Add(new CommandItem("UART String Echo", UsbPacket.CMD_UART_ECHO_STRING));
+                if (cmbCommands.Items.Count > 0) cmbCommands.SelectedIndex = 0;
             }
             else
             {
-                btnSend.Text = "Send";
+                LogMessage("UsbPacket sınıfı bulunamadı. USB Kontrol sekmesi komutları çalışmayabilir.", errorLogColor);
+            }
+
+            btnSend.Click += BtnSendCustomCommand_Click;
+            txtLog.Font = new Font("Consolas", 9F);
+            txtLog.ReadOnly = true;
+            cmbCommands.SelectedIndexChanged += CmbCommands_SelectedIndexChanged;
+
+            listViewCanReceive.Font = new Font("Consolas", 8.5F);
+            listViewCanTransmit.Font = new Font("Consolas", 8.5F);
+            listViewCanReceive.DoubleClick += ListViewCan_DoubleClick;
+            listViewCanTransmit.DoubleClick += ListViewCan_DoubleClick;
+
+            ContextMenuStrip cmsCanList = new ContextMenuStrip();
+            cmsCanList.Items.Add("Clear List", null, (s, ev) => {
+                if (cmsCanList.SourceControl == listViewCanReceive) listViewCanReceive.Items.Clear();
+                else if (cmsCanList.SourceControl == listViewCanTransmit) listViewCanTransmit.Items.Clear();
+            });
+            cmsCanList.Items.Add(new ToolStripSeparator());
+            var pauseUpdatesItem = cmsCanList.Items.Add("Pause Updates", null, (s, ev) => {
+                isCanUiPaused = !isCanUiPaused;
+                ((ToolStripMenuItem)s).Checked = isCanUiPaused;
+            });
+            ((ToolStripMenuItem)pauseUpdatesItem).CheckOnClick = true;
+
+            listViewCanReceive.ContextMenuStrip = cmsCanList;
+            listViewCanTransmit.ContextMenuStrip = cmsCanList;
+        }
+        private void ListViewCan_DoubleClick(object sender, EventArgs e)
+        {
+            ListView lv = sender as ListView;
+            if (lv != null && lv.SelectedItems.Count > 0)
+            {
+                ListViewItem selectedItem = lv.SelectedItems[0];
+                if (selectedItem.Tag is CanMessage canMsg)
+                {
+                    string details = $"Seq: {canMsg.SequenceNumber}\n" +
+                                    $"Dir: {canMsg.Direction}\n" +
+                                    $"UI Time: {canMsg.UiTimestamp:HH:mm:ss.fff}\n" +
+                                    $"PSoC TS: {canMsg.PSoCTimestamp}\n" +
+                                    $"ID: {canMsg.IdToHexString()} (0x{canMsg.Id:X})\n" +
+                                    $"DLC: {canMsg.Length}\n" +
+                                    $"Data: {canMsg.DataToHexString()}\n" +
+                                    $"Props: 0x{canMsg.Properties:X2}";
+                    MessageBox.Show(details, $"CAN Message Details ({canMsg.Direction})", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+                else
+                {
+                    string details = $"Seq: {selectedItem.SubItems[0].Text}\n" +
+                                    $"Time: {selectedItem.SubItems[1].Text}\n" +
+                                    $"ID: {selectedItem.SubItems[2].Text}\n" +
+                                    $"DLC: {selectedItem.SubItems[3].Text}\n" +
+                                    $"Data: {selectedItem.SubItems[4].Text}\n" +
+                                    $"PSoC TS: {selectedItem.SubItems[5].Text}\n" +
+                                    $"Props: {selectedItem.SubItems[6].Text}";
+                    MessageBox.Show(details, "CAN Message Details (Raw Text)", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
             }
         }
 
-        #region USB İletişimi
+        private void SetupEchoTimers()
+        {
+            usbEchoTimer = new System.Windows.Forms.Timer { Interval = 100 };
+            usbEchoTimer.Tick += UsbEchoTimer_Tick;
+
+            uartEchoTimer = new System.Windows.Forms.Timer { Interval = 100 };
+            uartEchoTimer.Tick += UartEchoTimer_Tick;
+        }
+
+        private void CmbCommands_SelectedIndexChanged(object sender, EventArgs e) => UpdateButtonText();
+
+        private void UpdateButtonText()
+        {
+            if (cmbCommands.SelectedItem is CommandItem selected)
+            {
+                if (selected.CommandId == UsbPacket.CMD_ECHO_STRING) btnSend.Text = isUsbEchoRunning ? "Stop USB Echo" : "Start USB Echo";
+                else if (selected.CommandId == UsbPacket.CMD_UART_ECHO_STRING) btnSend.Text = isUartEchoRunning ? "Stop UART Echo" : "Start UART Echo";
+                else btnSend.Text = "Send Command";
+            }
+            else btnSend.Text = "Send Command";
+        }
+
+        private void SetupCanInterfaceLogic()
+        {
+            _canHandler = new CanHandler();
+            _canHandler.CanMessageReceived += HandleCanMessageFromCanHandler;
+            _canHandler.LogMessageRequest += (msg, color) => LogMessage($"[CAN] {msg}", color);
+            btnSendCanMessage.Click += BtnSendCanMessageViaHandler_Click;
+        }
+
+
+        #region USB Device Management (FriendlyName ile Güncellendi)
         private void SetupUsbMonitoring()
         {
             usbDevices = new USBDeviceList(CyConst.DEVICES_CYUSB);
             usbDevices.DeviceAttached += USBDeviceAttached;
-            usbDevices.DeviceRemoved += USBDeviceRemoved;
-
-            deviceCheckTimer = new Timer { Interval = 2000 };
+            usbDevices.DeviceRemoved += USBDeviceRemoved; // Bu event her iki "cihaz" için de tetiklenebilir
+            deviceCheckTimer = new System.Windows.Forms.Timer { Interval = 3000 };
             deviceCheckTimer.Tick += DeviceCheckTimer_Tick;
             deviceCheckTimer.Start();
-
-            FindDevice();
-        }
-
-        private void SetupUsbEchoTimer()
-        {
-            usbEchoTimer = new Timer { Interval = 100 };
-            usbEchoTimer.Tick += UsbEchoTimer_Tick;
-        }
-
-        private void UsbEchoTimer_Tick(object sender, EventArgs e)
-        {
-            if (!isUsbEchoRunning) return;
-            SendUsbEchoPacket();
-        }
-
-        private void SendUsbEchoPacket()
-        {
-            if (myDevice == null || outEndpoint == null || inEndpoint == null) return;
-
-            string input = txtData.Text.Trim();
-            if (string.IsNullOrEmpty(input))
-            {
-                input = "USB Echo Test";
-            }
-
-            var packet = new UsbPacket { CommandId = UsbPacket.CMD_ECHO_STRING };
-            packet.SetDataFromText(input);
-
-            var resp = SendUsbPacket(packet); // SendUsbPacket handles its own colored logging for echo
-            if (resp != null)
-            {
-                usbEchoPacketCount++;
-                totalUsbSendTime += lastUsbSendTime;
-                totalUsbResponseTime += lastUsbResponseTime;
-
-                minUsbSendTime = Math.Min(minUsbSendTime, lastUsbSendTime);
-                maxUsbSendTime = Math.Max(maxUsbSendTime, lastUsbSendTime);
-                minUsbResponseTime = Math.Min(minUsbResponseTime, lastUsbResponseTime);
-                maxUsbResponseTime = Math.Max(maxUsbResponseTime, lastUsbResponseTime);
-
-                double avgSendTime = totalUsbSendTime / usbEchoPacketCount;
-                double avgResponseTime = totalUsbResponseTime / usbEchoPacketCount;
-
-                if (isUsbEchoRunning)
-                {
-                    UpdateStatus(
-                        $"USB Echo: #{usbEchoPacketCount} | Avg: {avgSendTime:F1}/{avgResponseTime:F1} ms | Min: {minUsbSendTime:F1}/{minUsbResponseTime:F1} ms | Max: {maxUsbSendTime:F1}/{maxUsbResponseTime:F1} ms",
-                        usbEchoLogColor); // Status bar color
-                }
-
-
-                if (usbEchoPacketCount % 50 == 0)
-                {
-                    LogMessage($"USB Echo Stats (#{usbEchoPacketCount}):", usbEchoLogColor);
-                    LogMessage($"  Send - Avg: {avgSendTime:F3} ms, Min: {minUsbSendTime:F3} ms, Max: {maxUsbSendTime:F3} ms", usbEchoLogColor);
-                    LogMessage($"  Recv - Avg: {avgResponseTime:F3} ms, Min: {minUsbResponseTime:F3} ms, Max: {maxUsbResponseTime:F3} ms", usbEchoLogColor);
-                }
-            }
-            else
-            {
-                StopUsbEchoMode();
-                UpdateStatus("USB Echo communication error! Stopped.", Color.Red);
-            }
-        }
-
-        private void StartUsbEchoMode()
-        {
-            if (isUsbEchoRunning) return;
-            if (myDevice == null || outEndpoint == null || inEndpoint == null)
-            {
-                MessageBox.Show("USB device not connected for Echo!", "USB Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                return;
-            }
-
-            isUsbEchoRunning = true;
-            usbEchoPacketCount = 0;
-            totalUsbSendTime = 0;
-            totalUsbResponseTime = 0;
-            minUsbSendTime = double.MaxValue;
-            maxUsbSendTime = 0;
-            minUsbResponseTime = double.MaxValue;
-            maxUsbResponseTime = 0;
-
-            var currentSelection = cmbCommands.SelectedItem as CommandItem;
-            if (currentSelection != null && currentSelection.CommandId == UsbPacket.CMD_ECHO_STRING)
-            {
-                UpdateButtonText();
-            }
-            LogMessage("----- USB Echo mode started -----", usbEchoLogColor);
-            string initialData = txtData.Text.Trim();
-            if (string.IsNullOrEmpty(initialData)) initialData = "USB Echo Test";
-            LogMessage($"USB Echo string: \"{initialData}\"", usbEchoLogColor);
-            usbEchoTimer.Start();
-        }
-
-        private void StopUsbEchoMode()
-        {
-            if (!isUsbEchoRunning) return;
-
-            usbEchoTimer.Stop();
-            isUsbEchoRunning = false;
-
-            var currentSelection = cmbCommands.SelectedItem as CommandItem;
-            if (currentSelection != null && currentSelection.CommandId == UsbPacket.CMD_ECHO_STRING)
-            {
-                UpdateButtonText();
-            }
-
-
-            if (usbEchoPacketCount > 0)
-            {
-                double avgSendTime = totalUsbSendTime / usbEchoPacketCount;
-                double avgResponseTime = totalUsbResponseTime / usbEchoPacketCount;
-
-                LogMessage("----- USB Echo mode stopped -----", usbEchoLogColor);
-                LogMessage($"Total USB packets: {usbEchoPacketCount}", usbEchoLogColor);
-                LogMessage($"  Send - Avg: {avgSendTime:F3} ms, Min: {minUsbSendTime:F3} ms, Max: {maxUsbSendTime:F3} ms", usbEchoLogColor);
-                LogMessage($"  Recv - Avg: {avgResponseTime:F3} ms, Min: {minUsbResponseTime:F3} ms, Max: {maxUsbResponseTime:F3} ms", usbEchoLogColor);
-                LogMessage("------------------------------", usbEchoLogColor);
-            }
-            else
-            {
-                LogMessage("----- USB Echo mode stopped (no packets sent) -----", usbEchoLogColor);
-            }
+            AttemptToFindAndConfigureDevice();
         }
 
         private void DeviceCheckTimer_Tick(object sender, EventArgs e)
         {
-            if (myDevice == null)
-                FindDevice();
+            // Her iki cihazın da bağlı olup olmadığını kontrol et
+            bool customBulkOk = customBulkDevice != null && customBulkDevice.DeviceHandle != IntPtr.Zero;
+            bool canDevOk = canDevice != null && canDevice.DeviceHandle != IntPtr.Zero;
+
+            if (!customBulkOk || !canDevOk)
+            {
+                LogMessage("Device Check: One or more USB functions (Bulk/CAN) not ready. Attempting to reconfigure...", Color.Gray);
+                AttemptToFindAndConfigureDevice(); // Tam yeniden yapılandırma
+            }
         }
 
-        private void FindDevice()
+        private void USBDeviceAttached(object sender, EventArgs e)
         {
+            var devEventArgs = e as CyUSB.USBEventArgs;
+            LogMessage($"USB Device Attached Event: FriendlyName='{devEventArgs?.FriendlyName}', Path='{devEventArgs?.Device?.Path}'", statusOkColor);
+            Task.Delay(750).ContinueWith(_ =>
+            {
+                if (this.IsHandleCreated && !this.IsDisposed)
+                {
+                    this.BeginInvoke(new Action(AttemptToFindAndConfigureDevice));
+                }
+            });
+        }
+
+        private void USBDeviceRemoved(object sender, EventArgs e)
+        {
+            var devEventArgs = e as CyUSB.USBEventArgs;
+            string removedFriendlyName = devEventArgs?.FriendlyName ?? "Unknown";
+            LogMessage($"USB Device Removed Event: FriendlyName='{removedFriendlyName}'", statusErrorColor);
+
+            bool customBulkWasActive = customBulkDevice != null;
+            bool canWasActive = canDevice != null;
+
+            // Kaldırılan cihaza göre ilgili referansları ve durumu sıfırla
+            if (customBulkDevice != null && (devEventArgs == null || customBulkDevice.Path == devEventArgs.Device?.Path || removedFriendlyName.IndexOf(CUSTOM_BULK_FRIENDLY_NAME_PART, StringComparison.OrdinalIgnoreCase) >= 0))
+            {
+                if (isUsbEchoRunning) StopUsbEchoMode();
+                customBulkDevice = null; // myDevice.Dispose() burada değil!
+                customOutEndpoint = null; customInEndpoint = null;
+                outEndpoint = null; inEndpoint = null;
+                LogMessage($"Custom Bulk Function '{removedFriendlyName}' disconnected.", statusErrorColor);
+            }
+
+            if (canDevice != null && (devEventArgs == null || canDevice.Path == devEventArgs.Device?.Path || removedFriendlyName.IndexOf(CAN_FRIENDLY_NAME_PART, StringComparison.OrdinalIgnoreCase) >= 0))
+            {
+                _canHandler?.StopListening();
+                _canHandler?.InitializeDevice(null, null, null);
+                canDevice = null;
+                canOutEndpoint = null; canInEndpoint = null;
+                LogMessage($"CAN Function '{removedFriendlyName}' disconnected.", statusErrorColor);
+            }
+
+            // Genel durum güncellemesi
+            if (customBulkDevice == null && canDevice == null && (customBulkWasActive || canWasActive))
+            {
+                UpdateStatus("All USB functions disconnected.", statusErrorColor);
+            }
+            else if (customBulkDevice == null && customBulkWasActive)
+            {
+                UpdateStatus("Custom Bulk USB function disconnected.", statusErrorColor);
+            }
+            else if (canDevice == null && canWasActive)
+            {
+                UpdateStatus("CAN USB function disconnected.", statusErrorColor);
+            }
+            // Gerekirse kalanları tekrar bulmaya çalışabiliriz, ama DeviceCheckTimer bunu yapacak.
+        }
+
+
+        private void AttemptToFindAndConfigureDevice()
+        {
+            // Önce mevcut referansları temizleyelim (eğer varsa ve bağlı değillerse)
+            if (customBulkDevice != null && customBulkDevice.DeviceHandle == IntPtr.Zero) customBulkDevice = null;
+            if (canDevice != null && canDevice.DeviceHandle == IntPtr.Zero) canDevice = null;
+
+            if (customBulkDevice == null) { customOutEndpoint = null; customInEndpoint = null; outEndpoint = null; inEndpoint = null; }
+            if (canDevice == null) { canOutEndpoint = null; canInEndpoint = null; _canHandler?.InitializeDevice(null, null, null); }
+
+
+            bool customConfigured = false;
+            bool canConfigured = false;
+
             try
             {
-                usbDevices = new USBDeviceList(CyConst.DEVICES_CYUSB);
+                usbDevices = new USBDeviceList(CyConst.DEVICES_CYUSB); // Her zaman listeyi yenile
 
-                foreach (CyUSBDevice dev in usbDevices)
+                // VID/PID'ye uyan tüm cihazları al
+                List<CyUSBDevice> matchingDevices = usbDevices.Cast<CyUSBDevice>()
+                                                    .Where(d => d.VendorID == USB_VID && d.ProductID == USB_PID)
+                                                    .ToList();
+
+                if (matchingDevices.Count == 0)
                 {
-                    if (dev.VendorID == USB_VID && dev.ProductID == USB_PID)
+                    UpdateStatus("USB Device (VID/PID match) not found.", statusErrorColor);
+                    LogMessage("No PSoC devices found.", errorLogColor);
+                    _canHandler?.StopListening(); // Emin olmak için
+                    return;
+                }
+
+                LogMessage($"Found {matchingDevices.Count} device(s) with matching VID/PID.", Color.LightBlue);
+
+                foreach (CyUSBDevice dev in matchingDevices)
+                {
+                    LogMessage($"Device: {dev.FriendlyName}", Color.Gray);
+                    if (string.IsNullOrEmpty(dev.FriendlyName)) continue;
+
+                    // CAN Arayüzünü/Cihazını Bul
+                    if (canDevice == null && dev.FriendlyName.IndexOf(CAN_FRIENDLY_NAME_PART, StringComparison.OrdinalIgnoreCase) >= 0)
                     {
-                        myDevice = dev;
-                        outEndpoint = null;
-                        inEndpoint = null;
-                        foreach (CyUSBEndPoint ept in myDevice.EndPoints)
+                        canDevice = dev;
+                        LogMessage($"CAN Device Candidate: {canDevice.FriendlyName}", canRxLogColor);
+                        canOutEndpoint = null; canInEndpoint = null; // Reset before trying to assign
+                        // Bu cihazın endpointlerini tara
+                        for (int i = 0; i < canDevice.EndPointCount; i++)
                         {
-                            if (ept.Attributes == 2)
+                            if (canDevice.EndPoints[i] is CyBulkEndPoint ep && ep.Attributes == 2)
                             {
-                                if (ept.bIn)
-                                    inEndpoint = (CyBulkEndPoint)ept;
-                                else
-                                    outEndpoint = (CyBulkEndPoint)ept;
+                                if (ep.bIn && ep.Address == 0x86) canInEndpoint = ep;
+                                else if (!ep.bIn && ep.Address == 0x07) canOutEndpoint = ep;
                             }
                         }
-
-                        if (outEndpoint != null && inEndpoint != null)
+                        if (canInEndpoint != null && canOutEndpoint != null)
                         {
-                            UpdateStatus("USB Device connected!", Color.Green);
-                            LogMessage($"USB Device found: {dev.FriendlyName}");
+                            LogMessage($"CAN Endpoints (EP:{canOutEndpoint.Address:X2} OUT / EP:{canInEndpoint.Address:X2} IN) on '{canDevice.FriendlyName}' configured.", canRxLogColor);
+                            _canHandler.InitializeDevice(canDevice, canInEndpoint, canOutEndpoint); // Sadece canDevice'ı ver
+                            _canHandler.StartListening();
+                            canConfigured = true;
+                        }
+                        else
+                        {
+                            LogMessage($"CAN device '{canDevice.FriendlyName}' found, but required Endpoints (0x07/0x86) missing or not Bulk.", errorLogColor);
+                            canDevice = null; // Başarısız olduysa sıfırla
+                        }
+                    }
+                    // Custom Bulk Arayüzünü/Cihazını Bul
+                    else if (customBulkDevice == null && dev.FriendlyName.IndexOf(CUSTOM_BULK_FRIENDLY_NAME_PART, StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        customBulkDevice = dev;
+                        LogMessage($"Custom Bulk Device Candidate: {customBulkDevice.FriendlyName}", Color.DarkSlateBlue);
+                        customOutEndpoint = null; customInEndpoint = null; // Reset
+                        for (int i = 0; i < customBulkDevice.EndPointCount; i++)
+                        {
+                            if (customBulkDevice.EndPoints[i] is CyBulkEndPoint ep && ep.Attributes == 2)
+                            {
+                                if (ep.bIn && ep.Address == 0x82) customInEndpoint = ep;
+                                else if (!ep.bIn && ep.Address == 0x01) customOutEndpoint = ep;
+                            }
+                        }
+                        if (customOutEndpoint != null && customInEndpoint != null)
+                        {
+                            outEndpoint = customOutEndpoint; // Genel olanları ata
+                            inEndpoint = customInEndpoint;
                             outEndpoint.TimeOut = 1000;
                             inEndpoint.TimeOut = 1000;
-                            SendVersionQuery();
-                            return;
+                            LogMessage($"Custom Bulk Endpoints (EP:{customOutEndpoint.Address:X2} OUT / EP:{customInEndpoint.Address:X2} IN) on '{customBulkDevice.FriendlyName}' configured.", Color.DarkSlateBlue);
+                            if (!isUsbEchoRunning && !isUartEchoRunning) SendVersionQueryOverCustomEP();
+                            customConfigured = true;
                         }
-                        myDevice = null;
+                        else
+                        {
+                            LogMessage($"Custom Bulk device '{customBulkDevice.FriendlyName}' found, but required Endpoints (0x01/0x82) missing or not Bulk.", errorLogColor);
+                            customBulkDevice = null; // Sıfırla
+                        }
                     }
+                } // End foreach dev
+
+                // Genel Durum Güncellemesi
+                if (customConfigured && canConfigured) UpdateStatus("All USB functions (Custom Bulk & CAN) connected.", statusOkColor);
+                else if (customConfigured) UpdateStatus("Custom Bulk connected. CAN not found/configured.", statusWarnColor);
+                else if (canConfigured) UpdateStatus("CAN connected. Custom Bulk not found/configured.", statusWarnColor);
+                else
+                {
+                    UpdateStatus("Required USB functions not found/configured.", statusErrorColor);
+                    LogMessage("Could not configure either Custom Bulk or CAN interfaces from found devices.", errorLogColor);
                 }
-                UpdateStatus("USB Device not found!", Color.Red);
+
             }
             catch (Exception ex)
             {
-                LogMessage($"Error finding USB device: {ex.Message}", errorLogColor);
-                UpdateStatus("Error finding USB device!", Color.Red);
+                LogMessage($"Error during USB device search/configuration: {ex.Message}", errorLogColor);
+                UpdateStatus("Error configuring USB devices.", statusErrorColor);
+                // Hata durumunda tüm referansları null yap
+                customBulkDevice = null; canDevice = null;
+                customOutEndpoint = null; customInEndpoint = null;
+                canOutEndpoint = null; canInEndpoint = null;
+                outEndpoint = null; inEndpoint = null;
+                _canHandler.StopListening();
+                _canHandler.InitializeDevice(null, null, null);
             }
         }
+        #endregion
 
-        private void SendVersionQuery()
+        #region USB Custom Packet Communication (LastError_Message düzeltildi)
+        // ... (SendVersionQueryOverCustomEP aynı) ...
+        // SendUsbPacket içindeki LastError_Message'ı düzelt
+        private void SendVersionQueryOverCustomEP()
         {
-            if (myDevice == null || outEndpoint == null || inEndpoint == null) return;
+            // customBulkDevice ve onun endpointlerini kullanmalı
+            if (customBulkDevice == null || customOutEndpoint == null || customInEndpoint == null)
+            {
+                LogMessage("Cannot send version query: Custom Bulk USB device/endpoints not ready.", statusWarnColor);
+                return;
+            }
             try
             {
                 var packet = new UsbPacket { CommandId = UsbPacket.CMD_VERSION, DataLength = 0 };
-                var response = SendUsbPacket(packet); // Will use default log color
+                // SendUsbPacket'e hangi endpointleri kullanacağını belirtmemiz gerekebilir,
+                // ya da SendUsbPacket'in her zaman custom endpointleri kullandığını varsayalım.
+                // Şu anki yapıda outEndpoint/inEndpoint custom'a ayarlı.
+                var response = SendUsbPacket(packet);
                 if (response != null)
                 {
-                    LogMessage("Version query sent (USB)");
-                    LogMessage(response.ParseContent());
+                    LogMessage($"Version query successful (via Custom EP). Response: {response.ParseContent()}");
+                }
+                else
+                {
+                    LogMessage("Version query (via Custom EP) failed or no response.", statusWarnColor);
                 }
             }
             catch (Exception ex)
             {
-                LogMessage($"Version query error (USB): {ex.Message}", errorLogColor);
+                LogMessage($"Version query error (Custom EP): {ex.Message}", errorLogColor);
             }
         }
 
         private UsbPacket SendUsbPacket(UsbPacket packet)
         {
-            if (myDevice == null || outEndpoint == null || inEndpoint == null)
+            if (customBulkDevice == null || outEndpoint == null || inEndpoint == null)
             {
                 LogMessage("USB Send Error: Device not ready.", errorLogColor);
                 return null;
@@ -391,438 +505,507 @@ namespace usb_bulk_2
 
             return response;
         }
-
-        private void USBDeviceAttached(object sender, EventArgs e) => FindDevice();
-        private void USBDeviceRemoved(object sender, EventArgs e)
+        private void BtnSendCustomCommand_Click(object sender, EventArgs e)
         {
-            bool deviceReallyRemoved = true;
-            if (myDevice != null)
+            if (!(cmbCommands.SelectedItem is CommandItem selectedCmdItem)) return;
+
+            if (selectedCmdItem.CommandId == UsbPacket.CMD_ECHO_STRING)
             {
-                USBDeviceList currentDevices = new USBDeviceList(CyConst.DEVICES_CYUSB);
-                deviceReallyRemoved = !currentDevices.Cast<CyUSBDevice>().Any(d => d.VendorID == myDevice.VendorID && d.ProductID == myDevice.ProductID && d.SerialNumber == myDevice.SerialNumber);
+                if (isUsbEchoRunning) StopUsbEchoMode(); else StartUsbEchoMode();
+                return;
+            }
+            if (selectedCmdItem.CommandId == UsbPacket.CMD_UART_ECHO_STRING)
+            {
+                if (isUartEchoRunning) StopUartEchoMode(); else StartUartEchoMode();
+                return;
             }
 
-            if (myDevice != null && deviceReallyRemoved)
+            // customBulkDevice ve onun endpointlerini (outEndpoint/inEndpoint üzerinden) kullan
+            if (customBulkDevice == null || outEndpoint == null || inEndpoint == null)
             {
-                myDevice = null;
-                outEndpoint = null;
-                inEndpoint = null;
-
-                if (isUsbEchoRunning)
-                {
-                    StopUsbEchoMode();
-                }
-
-                UpdateStatus("USB Device removed!", Color.Red);
-                LogMessage("USB Device removed");
+                MessageBox.Show("Custom Bulk USB device not connected or endpoints not ready!", "USB Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
             }
-        }
-        #endregion
-        /// <summary>
-        /// ///////////////////////////////////////////////////////////////////////////////////////////////////////
-        /// UART
-        /// /////////////////////////////////////////////////////////////////////////////////////////////////////////
-        /// </summary>
-        #region UART İletişimi
-        private void SetupUart()
-        {
-            string[] portNames = SerialPort.GetPortNames();
-            if (portNames.Length > 0)
+
+            if (isUsbEchoRunning) StopUsbEchoMode();
+            if (isUartEchoRunning) StopUartEchoMode();
+
+            var packetToSend = new UsbPacket { CommandId = selectedCmdItem.CommandId };
+            string dataInput = txtData.Text.Trim();
+
+            if (selectedCmdItem.CommandId == UsbPacket.CMD_WRITE)
             {
-                selectedComPort = "COM9";
+                if (!TryParseHexByte(dataInput, out byte writeVal)) return;
+                packetToSend.Data[0] = writeVal;
+                packetToSend.DataLength = 1;
+            }
 
-                if (!portNames.Contains(selectedComPort))
-                {
-                    LogMessage($"UART: Specified COM port {selectedComPort} not found. Available: {string.Join(", ", portNames)}", Color.Orange);
-                    if (portNames.Length > 0) selectedComPort = portNames[0];
-                    else
-                    {
-                        LogMessage("UART: No COM ports available to fall back to.", Color.Orange);
-                        UpdateStatus("UART: No COM ports available.", Color.Orange);
-                        return;
-                    }
-                    LogMessage($"UART: Falling back to {selectedComPort}.");
-                }
+            LogMessage($"----- Sending USB Custom Command: {selectedCmdItem.Name} -----", Color.Indigo);
+            UsbPacket response = SendUsbPacket(packetToSend);
 
-                uartPort = new SerialPort(selectedComPort, UART_BAUD_RATE, Parity.None, 8, StopBits.One);
-                uartPort.ReadTimeout = 200;
-                uartPort.WriteTimeout = 200;
-                LogMessage($"UART: Using {selectedComPort} at {UART_BAUD_RATE} baud.");
+            if (response != null)
+            {
+                LogMessage($"Response to {selectedCmdItem.Name}: {response.ParseContent()}");
+                UpdateStatus($"Command '{selectedCmdItem.Name}' sent. Response received.", statusOkColor);
             }
             else
             {
-                LogMessage("UART: No COM ports found.", Color.Orange);
-                UpdateStatus("UART: No COM ports available.", Color.Orange);
+                LogMessage($"No response or error for command {selectedCmdItem.Name}.", errorLogColor);
+                UpdateStatus($"Error sending/receiving for '{selectedCmdItem.Name}'.", statusErrorColor);
+            }
+            LogMessage("----------------------------------------------------", Color.Indigo);
+        }
+
+        private bool TryParseHexByte(string input, out byte value)
+        {
+            value = 0;
+            if (string.IsNullOrWhiteSpace(input))
+            {
+                MessageBox.Show("Hex input cannot be empty.", "Input Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return false;
+            }
+            input = input.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? input.Substring(2) : input;
+            if (input.Length > 2 || !byte.TryParse(input, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out value))
+            {
+                MessageBox.Show("Invalid hex byte value! Example: A5 or 0xA5", "Input Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return false;
+            }
+            return true;
+        }
+        #endregion
+
+        #region USB Echo Logic (Detaylı Loglama)
+        private void UsbEchoTimer_Tick(object sender, EventArgs e)
+        {
+            if (!isUsbEchoRunning) return;
+            SendUsbEchoPacket();
+        }
+        private void StartUsbEchoMode()
+        {
+            // customBulkDevice ve onun endpointlerini kullan
+            if (isUsbEchoRunning) return;
+            if (customBulkDevice == null || outEndpoint == null || inEndpoint == null)
+            {
+                MessageBox.Show("Custom Bulk USB device not ready for USB Echo!", "USB Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
+            isUsbEchoRunning = true;
+            usbEchoPacketCount = 0;
+            totalUsbSendTime = 0; totalUsbResponseTime = 0;
+            minUsbSendTime = double.MaxValue; maxUsbSendTime = 0;
+            minUsbResponseTime = double.MaxValue; maxUsbResponseTime = 0;
+            UpdateButtonText();
+            LogMessage("----- USB Echo Mode STARTED (Custom Bulk) -----", usbEchoLogColor);
+            usbEchoTimer.Start();
+        }
+        private void StopUsbEchoMode()
+        {
+            if (!isUsbEchoRunning) return;
+            usbEchoTimer.Stop();
+            isUsbEchoRunning = false;
+            UpdateButtonText();
+            LogMessage("----- USB Echo Mode STOPPED (Custom Bulk) -----", usbEchoLogColor);
+            if (usbEchoPacketCount > 0)
+            {
+                LogMessage($"Total USB Echo Packets: {usbEchoPacketCount}", usbEchoLogColor);
+                LogMessage($"  Avg Send: {totalUsbSendTime / usbEchoPacketCount:F2}ms | Min: {minUsbSendTime:F2}ms | Max: {maxUsbSendTime:F2}ms", usbEchoLogColor);
+                LogMessage($"  Avg Recv: {totalUsbResponseTime / usbEchoPacketCount:F2}ms | Min: {minUsbResponseTime:F2}ms | Max: {maxUsbResponseTime:F2}ms", usbEchoLogColor);
             }
         }
-
-
-        private void SetupUartEchoTimer()
+        private void SendUsbEchoPacket()
         {
-            uartEchoTimer = new Timer { Interval = 100 };
-            uartEchoTimer.Tick += UartEchoTimer_Tick;
-        }
+            if (customBulkDevice == null || outEndpoint == null || inEndpoint == null)
+            {
+                StopUsbEchoMode();
+                LogMessage("USB Echo: Custom Bulk Device lost. Stopping.", errorLogColor);
+                return;
+            }
 
+            string echoDataStr = string.IsNullOrWhiteSpace(txtData.Text) ? "Default USB Echo Data" : txtData.Text.Trim();
+            var packet = new UsbPacket { CommandId = UsbPacket.CMD_ECHO_STRING };
+            packet.SetDataFromText(echoDataStr);
+
+            UsbPacket resp = SendUsbPacket(packet);
+
+            if (resp != null)
+            {
+                usbEchoPacketCount++;
+                totalUsbSendTime += lastUsbSendTime;
+                totalUsbResponseTime += lastUsbResponseTime;
+                minUsbSendTime = Math.Min(minUsbSendTime, lastUsbSendTime);
+                maxUsbSendTime = Math.Max(maxUsbSendTime, lastUsbSendTime);
+                minUsbResponseTime = Math.Min(minUsbResponseTime, lastUsbResponseTime);
+                maxUsbResponseTime = Math.Max(maxUsbResponseTime, lastUsbResponseTime);
+
+                if (isUsbEchoRunning)
+                    UpdateStatus($"USB Echo #{usbEchoPacketCount}: Send {lastUsbSendTime:F1}ms | Recv {lastUsbResponseTime:F1}ms", usbEchoLogColor);
+
+                string receivedEchoStr = resp.GetDataAsText();
+                bool dataMatch = echoDataStr == receivedEchoStr;
+
+                if (!dataMatch)
+                {
+                    // Hata durumunda her zaman log basılmalı
+                    LogMessage($"USB Echo Mismatch: Sent=\"{echoDataStr}\" | Recv=\"{receivedEchoStr}\"", errorLogColor);
+                }
+                else if (usbEchoPacketCount % 10 == 0 || usbEchoPacketCount == 1)
+                {
+                    // Standartlaştırılmış log formatı
+                    int dataBytesLen = packet.ToByteArray().Length;
+                    double sendMbps = dataBytesLen * 8.0 / (lastUsbSendTime / 1000.0) / 1000000.0;
+
+                    LogMessage($"Echo #{usbEchoPacketCount} [USB] TX: {dataBytesLen} bytes in {lastUsbSendTime:F2}ms ({sendMbps:F2} Mbps)", usbEchoLogColor);
+
+                    int respBytesLen = resp != null ? resp.ToByteArray().Length : 0;
+                    double recvMbps = respBytesLen * 8.0 / (lastUsbResponseTime / 1000.0) / 1000000.0;
+
+                    LogMessage($"Echo #{usbEchoPacketCount} [USB] RX: {respBytesLen} bytes in {lastUsbResponseTime:F2}ms ({recvMbps:F2} Mbps) - {(dataMatch ? "Match" : "Mismatch")}", usbEchoLogColor);
+
+                    // İstatistikler
+                    LogMessage($"Echo #{usbEchoPacketCount} [USB] Stats:", usbEchoLogColor);
+                    LogMessage($"  TX: Avg {totalUsbSendTime / usbEchoPacketCount:F2}ms | Min {minUsbSendTime:F2}ms | Max {maxUsbSendTime:F2}ms", usbEchoLogColor);
+                    LogMessage($"  RX: Avg {totalUsbResponseTime / usbEchoPacketCount:F2}ms | Min {minUsbResponseTime:F2}ms | Max {maxUsbResponseTime:F2}ms", usbEchoLogColor);
+                }
+            }
+            else
+            {
+                LogMessage("USB Echo: SendUsbPacket returned null. Stopping.", errorLogColor);
+                StopUsbEchoMode();
+            }
+        }
+        #endregion
+
+        #region UART Communication & Echo (Detaylı Loglama)
+        private void SetupUartCommunication()
+        {
+            try
+            {
+                string[] portNames = SerialPort.GetPortNames();
+                if (!portNames.Contains(selectedComPort) && portNames.Length > 0)
+                {
+                    LogMessage($"UART: Default port {selectedComPort} not found. Available: {string.Join(", ", portNames)}. Using {portNames[0]}.", statusWarnColor);
+                    selectedComPort = portNames[0];
+                }
+                else if (portNames.Length == 0)
+                {
+                    LogMessage("UART: No COM ports available.", statusErrorColor);
+                    UpdateStatus("UART: No COM ports.", statusErrorColor);
+                    return;
+                }
+
+                uartPort = new SerialPort(selectedComPort, UART_BAUD_RATE, Parity.None, 8, StopBits.One)
+                {
+                    ReadTimeout = 200,
+                    WriteTimeout = 200
+                };
+                LogMessage($"UART: Configured for {selectedComPort} at {UART_BAUD_RATE} baud.", Color.CadetBlue);
+            }
+            catch (Exception ex)
+            {
+                LogMessage($"UART Setup Error: {ex.Message}", errorLogColor);
+            }
+        }
         private void UartEchoTimer_Tick(object sender, EventArgs e)
         {
             if (!isUartEchoRunning) return;
             SendUartEchoPacket();
         }
+        private void StartUartEchoMode()
+        {
+            if (isUartEchoRunning) return;
+            if (uartPort == null) { SetupUartCommunication(); }
+            if (uartPort == null) { MessageBox.Show("UART port not available for Echo!", "UART Error", MessageBoxButtons.OK, MessageBoxIcon.Error); return; }
 
+            try { if (!uartPort.IsOpen) uartPort.Open(); }
+            catch (Exception ex) { LogMessage($"UART Echo: Error opening port {uartPort.PortName}: {ex.Message}", errorLogColor); return; }
+
+            isUartEchoRunning = true;
+            uartEchoPacketCount = 0;
+            totalUartSendTime = 0; totalUartResponseTime = 0;
+            minUartSendTime = double.MaxValue; maxUartSendTime = 0;
+            minUartResponseTime = double.MaxValue; maxUartResponseTime = 0;
+            UpdateButtonText();
+            LogMessage($"----- UART Echo Mode STARTED on {uartPort.PortName} -----", uartEchoLogColor);
+            uartEchoTimer.Start();
+        }
+        private void StopUartEchoMode()
+        {
+            if (!isUartEchoRunning) return;
+            uartEchoTimer.Stop();
+            isUartEchoRunning = false;
+            UpdateButtonText();
+            LogMessage($"----- UART Echo Mode STOPPED on {uartPort.PortName} -----", uartEchoLogColor);
+            if (uartEchoPacketCount > 0)
+            {
+                LogMessage($"Total UART Echo Packets: {uartEchoPacketCount}", uartEchoLogColor);
+                LogMessage($"  Avg Send: {totalUartSendTime / uartEchoPacketCount:F2}ms | Min: {minUartSendTime:F2}ms | Max: {maxUartSendTime:F2}ms", uartEchoLogColor);
+                LogMessage($"  Avg Recv: {totalUartResponseTime / uartEchoPacketCount:F2}ms | Min: {minUartResponseTime:F2}ms | Max: {maxUartResponseTime:F2}ms", uartEchoLogColor);
+            }
+        }
         private void SendUartEchoPacket()
         {
             if (uartPort == null || !uartPort.IsOpen)
             {
-                if (isUartEchoRunning)
-                {
-                    LogMessage("UART Echo Error: Port not open. Stopping UART echo.", errorLogColor);
-                    StopUartEchoMode();
-                }
+                StopUartEchoMode();
+                LogMessage("UART Echo: Port not open. Stopping.", errorLogColor);
                 return;
             }
 
-            string textToSend = txtData.Text.Trim();
-            if (string.IsNullOrEmpty(textToSend))
-            {
-                textToSend = "UART Echo Test";
-            }
+            string dataToSendStr = string.IsNullOrWhiteSpace(txtData.Text) ? "Default UART Echo Data" : txtData.Text.Trim();
+            byte[] bytesToSend = Encoding.ASCII.GetBytes(dataToSendStr);
+            byte[] receivedBuffer = new byte[bytesToSend.Length];
+            int bytesActuallyRead = 0;
 
             try
             {
-                Stopwatch swSend = Stopwatch.StartNew();
-                uartPort.Write(textToSend);
+                var swSend = Stopwatch.StartNew();
+                uartPort.Write(bytesToSend, 0, bytesToSend.Length);
                 swSend.Stop();
                 lastUartSendTime = swSend.Elapsed.TotalMilliseconds;
-                double uartSentBytes = Encoding.ASCII.GetByteCount(textToSend);
-                double uartSendMbps = (lastUartSendTime > 0) ? (uartSentBytes * 8.0 / 1_000_000.0) / (lastUartSendTime / 1000.0) : 0;
+                double uartSendMbps = bytesToSend.Length * 8.0 / (lastUartSendTime / 1000.0) / 1000000.0;
 
-                if (uartEchoPacketCount % 50 == 0 || uartEchoPacketCount == 0) // İlk paket ve periyodik
-                {
-                    LogMessage($"UART Sent: {uartSentBytes} bytes -> {lastUartSendTime:F3} ms -> {uartSendMbps:F2} Mbps", uartEchoLogColor);
-                }
-
-
-                byte[] buffer = new byte[Encoding.ASCII.GetByteCount(textToSend)];
-                int bytesRead = 0;
-                Stopwatch swRecv = Stopwatch.StartNew();
+                var swRecv = Stopwatch.StartNew();
                 try
                 {
-                    int totalBytesRead = 0;
-                    uartPort.ReadTimeout = 100;
-
-                    while (totalBytesRead < buffer.Length && swRecv.ElapsedMilliseconds < 200)
+                    int totalRead = 0;
+                    long startTimeMs = swRecv.ElapsedMilliseconds;
+                    while (totalRead < receivedBuffer.Length && (swRecv.ElapsedMilliseconds - startTimeMs) < uartPort.ReadTimeout)
                     {
                         if (uartPort.BytesToRead > 0)
                         {
-                            int currentRead = uartPort.Read(buffer, totalBytesRead, Math.Min(uartPort.BytesToRead, buffer.Length - totalBytesRead));
-                            totalBytesRead += currentRead;
+                            int readNow = uartPort.Read(receivedBuffer, totalRead, receivedBuffer.Length - totalRead);
+                            if (readNow == 0) break;
+                            totalRead += readNow;
                         }
                         else
                         {
-                            System.Threading.Thread.Sleep(1);
+                            System.Threading.Thread.Sleep(5);
                         }
                     }
-                    bytesRead = totalBytesRead;
+                    bytesActuallyRead = totalRead;
                 }
-                catch (TimeoutException)
-                {
-                    // Timeout logu aşağıda genel hata/uyuşmazlık kısmında ele alınabilir.
-                }
+                catch (TimeoutException) { /* Handled by checking bytesActuallyRead */ }
+
                 swRecv.Stop();
                 lastUartResponseTime = swRecv.Elapsed.TotalMilliseconds;
-                double uartReceivedBytes = bytesRead;
-                double uartRecvMbps = (lastUartResponseTime > 0 && uartReceivedBytes > 0) ? (uartReceivedBytes * 8.0 / 1_000_000.0) / (lastUartResponseTime / 1000.0) : 0;
+                string receivedStr = Encoding.ASCII.GetString(receivedBuffer, 0, bytesActuallyRead);
+                double uartRecvMbps = bytesActuallyRead * 8.0 / (lastUartResponseTime / 1000.0) / 1000000.0;
 
+                bool dataMatch = bytesActuallyRead == bytesToSend.Length && dataToSendStr.Equals(receivedStr);
 
-                string receivedText = Encoding.ASCII.GetString(buffer, 0, bytesRead);
-
-                if (bytesRead > 0 && textToSend.Equals(receivedText))
+                if (dataMatch)
                 {
                     uartEchoPacketCount++;
                     totalUartSendTime += lastUartSendTime;
                     totalUartResponseTime += lastUartResponseTime;
-
                     minUartSendTime = Math.Min(minUartSendTime, lastUartSendTime);
                     maxUartSendTime = Math.Max(maxUartSendTime, lastUartSendTime);
                     minUartResponseTime = Math.Min(minUartResponseTime, lastUartResponseTime);
                     maxUartResponseTime = Math.Max(maxUartResponseTime, lastUartResponseTime);
 
-                    double avgSendTime = totalUartSendTime / uartEchoPacketCount;
-                    double avgResponseTime = totalUartResponseTime / uartEchoPacketCount;
-
                     if (isUartEchoRunning)
-                    {
-                        UpdateStatus(
-                         $"UART Echo: #{uartEchoPacketCount} | Avg: {avgSendTime:F1}/{avgResponseTime:F1} ms | Min: {minUartSendTime:F1}/{minUartResponseTime:F1} ms | Max: {maxUartSendTime:F1}/{maxUartResponseTime:F1} ms",
-                         uartEchoLogColor); // Status bar color
-                    }
+                        UpdateStatus($"UART Echo #{uartEchoPacketCount}: Send {lastUartSendTime:F1}ms | Recv {lastUartResponseTime:F1}ms", uartEchoLogColor);
 
-                    if (uartEchoPacketCount % 50 == 0 || uartEchoPacketCount == 1) // İlk paket ve periyodik (başarılı alım için)
+                    if (uartEchoPacketCount % 10 == 0 || uartEchoPacketCount == 1)
                     {
-                        LogMessage($"UART Received: {uartReceivedBytes} bytes -> {lastUartResponseTime:F3} ms -> {uartRecvMbps:F2} Mbps (Match)", uartEchoLogColor);
-                    }
+                        // Standartlaştırılmış log formatı - USB ile aynı format
+                        LogMessage($"Echo #{uartEchoPacketCount} [UART] TX: {bytesToSend.Length} bytes in {lastUartSendTime:F2}ms ({uartSendMbps:F2} Mbps)", uartEchoLogColor);
+                        LogMessage($"Echo #{uartEchoPacketCount} [UART] RX: {bytesActuallyRead} bytes in {lastUartResponseTime:F2}ms ({uartRecvMbps:F2} Mbps) - Match", uartEchoLogColor);
 
-                    if (uartEchoPacketCount % 50 == 0 && uartEchoPacketCount > 1) // Periyodik istatistik (ilk paket hariç)
-                    {
-                        LogMessage($"UART Echo Stats (#{uartEchoPacketCount}):", uartEchoLogColor);
-                        LogMessage($"  Send - Avg: {avgSendTime:F3} ms, Min: {minUartSendTime:F3} ms, Max: {maxUartSendTime:F3} ms", uartEchoLogColor);
-                        LogMessage($"  Recv - Avg: {avgResponseTime:F3} ms, Min: {minUartResponseTime:F3} ms, Max: {maxUartResponseTime:F3} ms", uartEchoLogColor);
+                        // İstatistikler
+                        LogMessage($"Echo #{uartEchoPacketCount} [UART] Stats:", uartEchoLogColor);
+                        LogMessage($"  TX: Avg {totalUartSendTime / uartEchoPacketCount:F2}ms | Min {minUartSendTime:F2}ms | Max {maxUartSendTime:F2}ms", uartEchoLogColor);
+                        LogMessage($"  RX: Avg {totalUartResponseTime / uartEchoPacketCount:F2}ms | Min {minUartResponseTime:F2}ms | Max {maxUartResponseTime:F2}ms", uartEchoLogColor);
                     }
                 }
                 else
                 {
-                    if (uartEchoPacketCount % 20 == 0 || uartEchoPacketCount == 0 || bytesRead < uartSentBytes) // Hata/uyuşmazlık durumunu daha sık logla
-                    {
-                        string errorMsg = $"UART Echo Mismatch/Timeout: Sent='{textToSend}' ({uartSentBytes}B), Recv='{receivedText}' ({uartReceivedBytes}B).";
-                        errorMsg += $" Times: Send={lastUartSendTime:F1}ms, Recv={lastUartResponseTime:F1}ms.";
-                        if (uartReceivedBytes > 0) errorMsg += $" Recv Speed: {uartRecvMbps:F2} Mbps.";
-                        LogMessage(errorMsg, errorLogColor);
-                    }
+                    // Hata durumunda her zaman log basılmalı
+                    LogMessage($"Echo [UART] Mismatch: Sent=\"{dataToSendStr}\" ({bytesToSend.Length}B) | Recv=\"{receivedStr}\" ({bytesActuallyRead}B)", errorLogColor);
+                    if (isUartEchoRunning)
+                        UpdateStatus($"UART Echo #{uartEchoPacketCount}: Mismatch/Timeout", errorLogColor);
                 }
-            }
-            catch (InvalidOperationException ioe)
-            {
-                LogMessage($"UART Echo Error (Invalid Operation): {ioe.Message}. Stopping UART echo.", errorLogColor);
-                StopUartEchoMode();
             }
             catch (Exception ex)
             {
-                LogMessage($"UART Echo Error: {ex.Message}. Stopping UART echo.", errorLogColor);
+                LogMessage($"UART Echo Error: {ex.Message}. Stopping.", errorLogColor);
                 StopUartEchoMode();
             }
         }
+        #endregion
 
-
-        private void StartUartEchoMode()
+        #region CAN Interface Logic
+        private void HandleCanMessageFromCanHandler(CanMessage message)
         {
-            if (isUartEchoRunning) return;
-
-            if (uartPort == null)
+            if (this.IsHandleCreated && !this.IsDisposed)
             {
-                MessageBox.Show("No COM port configured for UART Echo!", "UART Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                SetupUart();
-                if (uartPort == null) return;
-            }
-
-            try
-            {
-                if (!uartPort.IsOpen)
+                this.BeginInvoke(new Action(() =>
                 {
-                    uartPort.Open();
-                    LogMessage($"UART Port {uartPort.PortName} opened for echo.");
-                }
+                    ListView targetListView = (message.Direction == "Rx") ? listViewCanReceive : listViewCanTransmit;
+                    Color itemColor = (message.Direction == "Rx") ? canRxLogColor : canTxLogColor;
+                    AddCanMessageToUiListView(targetListView, message, itemColor);
+                }));
             }
-            catch (Exception ex)
+        }
+
+        private void AddCanMessageToUiListView(ListView listView, CanMessage message, Color itemColor)
+        {
+            var lvi = new ListViewItem(message.SequenceNumber.ToString());
+            lvi.SubItems.Add(message.UiTimestamp.ToString("HH:mm:ss.fff"));
+            lvi.SubItems.Add(message.Id.ToString(message.Id > 0x7FF ? "X8" : "X3"));
+            lvi.SubItems.Add(message.Length.ToString());
+            lvi.SubItems.Add(message.DataToHexString());
+            lvi.SubItems.Add(message.PSoCTimestamp.ToString());
+            lvi.SubItems.Add(message.Properties.ToString("X2"));
+            lvi.ForeColor = itemColor;
+            lvi.Tag = message;
+
+            listView.Items.Add(lvi);
+            if (listView.Items.Count > 1500)
             {
-                MessageBox.Show($"Failed to open COM port {uartPort.PortName}: {ex.Message}", "UART Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                LogMessage($"UART Error: Could not open port {uartPort.PortName} - {ex.Message}", errorLogColor);
+                listView.Items.RemoveAt(0);
+            }
+            if (!isCanUiPaused)
+            {
+                lvi.EnsureVisible();
+            }
+        }
+
+        private void BtnSendCanMessageViaHandler_Click(object sender, EventArgs e)
+        {
+            // Artık _canHandler'ın IsDeviceReady'si canDevice ve onun endpointlerini kontrol eder
+            if (_canHandler == null || !_canHandler.IsDeviceReady)
+            {
+                MessageBox.Show("CAN USB function not ready for sending!", "CAN Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return;
             }
 
-            isUartEchoRunning = true;
-            uartEchoPacketCount = 0; // Sıfırlama burada yapılmalı
-            totalUartSendTime = 0;
-            totalUartResponseTime = 0;
-            minUartSendTime = double.MaxValue;
-            maxUartSendTime = 0;
-            minUartResponseTime = double.MaxValue;
-            maxUartResponseTime = 0;
-            uartReceiveBuffer.Clear();
+            string idStr = txtCanTransmitId.Text.Trim().ToLower();
+            if (idStr.StartsWith("0x")) idStr = idStr.Substring(2);
+            if (idStr.EndsWith("h")) idStr = idStr.Substring(0, idStr.Length - 1);
 
-            var currentSelection = cmbCommands.SelectedItem as CommandItem;
-            if (currentSelection != null && currentSelection.CommandId == UsbPacket.CMD_UART_ECHO_STRING)
+            if (!uint.TryParse(idStr, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out uint canId))
             {
-                UpdateButtonText();
+                MessageBox.Show("Invalid CAN ID. Please enter a hex value (e.g., 1A0 or 1234567).", "Input Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
             }
 
-            LogMessage("----- UART Echo mode started -----", uartEchoLogColor);
-            string initialData = txtData.Text.Trim();
-            if (string.IsNullOrEmpty(initialData)) initialData = "UART Echo Test";
-            LogMessage($"UART Echo string: \"{initialData}\" on {uartPort.PortName}", uartEchoLogColor);
-            uartEchoTimer.Start();
-        }
-
-        private void StopUartEchoMode()
-        {
-            if (!isUartEchoRunning) return;
-
-            uartEchoTimer.Stop();
-            isUartEchoRunning = false;
-
-            var currentSelection = cmbCommands.SelectedItem as CommandItem;
-            if (currentSelection != null && currentSelection.CommandId == UsbPacket.CMD_UART_ECHO_STRING)
+            bool isExtended = chkCanExtendedId.Checked;
+            if (!isExtended && canId > 0x7FF)
             {
-                UpdateButtonText();
+                MessageBox.Show("Standard CAN ID cannot exceed 0x7FF. For larger IDs, check 'Extended'.", "Input Warning", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                chkCanExtendedId.Checked = true;
+            }
+            else if (isExtended && canId > 0x1FFFFFFF)
+            {
+                MessageBox.Show("Extended CAN ID cannot exceed 0x1FFFFFFF.", "Input Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
             }
 
-            if (uartEchoPacketCount > 0)
+            byte dlc = (byte)numCanTransmitDlc.Value;
+            if (!CanHandler.TryParseHexData(txtCanTransmitData.Text, dlc, out byte[] dataBytes))
             {
-                double avgSendTime = totalUartSendTime / uartEchoPacketCount;
-                double avgResponseTime = totalUartResponseTime / uartEchoPacketCount;
-
-                LogMessage("----- UART Echo mode stopped -----", uartEchoLogColor);
-                LogMessage($"Total UART packets: {uartEchoPacketCount}", uartEchoLogColor);
-                LogMessage($"  Send - Avg: {avgSendTime:F3} ms, Min: {minUartSendTime:F3} ms, Max: {maxUartSendTime:F3} ms", uartEchoLogColor);
-                LogMessage($"  Recv - Avg: {avgResponseTime:F3} ms, Min: {minUartResponseTime:F3} ms, Max: {maxUartResponseTime:F3} ms", uartEchoLogColor);
-                LogMessage("------------------------------", uartEchoLogColor);
+                MessageBox.Show($"Invalid data format for DLC {dlc}. Enter {dlc} hex bytes separated by spaces (e.g., 00 AA 11).", "Input Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
             }
-            else
+
+            var msgToSend = new CanMessage
             {
-                LogMessage("----- UART Echo mode stopped (no packets sent) -----", uartEchoLogColor);
+                Id = canId,
+                Length = dlc,
+                Properties = 0,
+                PSoCTimestamp = 0
+            };
+            Array.Copy(dataBytes, msgToSend.Data, 8);
+
+            if (!_canHandler.SendCanMessage(msgToSend))
+            {
+                LogMessage("Failed to send CAN message. Check CAN logs.", errorLogColor);
             }
         }
-
         #endregion
 
+        #region MainForm Load & Closing
         private void MainForm_Load(object sender, EventArgs e)
         {
-            LogMessage("Application started");
-            LogMessage("Searching for USB device...");
+            LogMessage("Application_Started. Version: " + Application.ProductVersion);
+            UpdateStatus("Initializing...", Color.Gray);
+            // AttemptToFindAndConfigureDevice() is called by SetupUsbMonitoring
         }
 
         private void MainForm_FormClosing(object sender, FormClosingEventArgs e)
         {
-            StopUsbEchoMode();
-            StopUartEchoMode();
+            LogMessage("Application_Closing...", Color.Gray);
+            if (isUsbEchoRunning) StopUsbEchoMode();
+            if (isUartEchoRunning) StopUartEchoMode();
+            _canHandler?.StopListening();
 
-            deviceCheckTimer?.Stop();
-            deviceCheckTimer?.Dispose();
+            deviceCheckTimer?.Stop(); deviceCheckTimer?.Dispose();
             usbEchoTimer?.Dispose();
             uartEchoTimer?.Dispose();
+            _canHandler?.Dispose();
+            uartPort?.Close(); uartPort?.Dispose();
 
+            // usbDevices.Dispose() çağrıldığında içindeki tüm CyUSBDevice nesneleri de (customBulkDevice, canDevice)
+            // (eğer aynı fiziksel cihazın farklı "görünümleri" değillerse ve usbDevices listesinden geldilerse)
+            // dispose edilir. Eğer farklı fiziksel cihazlarsa, her birini ayrı yönetmek gerekebilir.
+            // Şimdilik usbDevices.Dispose()'un yeterli olduğunu varsayıyoruz.
             usbDevices?.Dispose();
+            customBulkDevice = null;
+            canDevice = null;
 
-            if (uartPort != null)
-            {
-                if (uartPort.IsOpen)
-                {
-                    uartPort.Close();
-                }
-                uartPort.Dispose();
-            }
+            LogMessage("Application_Closed.");
         }
+        #endregion
 
-        private void BtnSend_Click(object sender, EventArgs e)
-        {
-            var selected = cmbCommands.SelectedItem as CommandItem;
-            if (selected == null) return;
-
-            if (selected.CommandId == UsbPacket.CMD_ECHO_STRING)
-            {
-                if (isUsbEchoRunning) StopUsbEchoMode();
-                else StartUsbEchoMode();
-            }
-            else if (selected.CommandId == UsbPacket.CMD_UART_ECHO_STRING)
-            {
-                if (isUartEchoRunning) StopUartEchoMode();
-                else StartUartEchoMode();
-            }
-            else
-            {
-                if (isUsbEchoRunning) StopUsbEchoMode();
-                if (isUartEchoRunning) StopUartEchoMode();
-
-                if (myDevice == null || outEndpoint == null || inEndpoint == null)
-                {
-                    MessageBox.Show("USB device not connected for this command!", "USB Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    return;
-                }
-
-                var packet = new UsbPacket { CommandId = selected.CommandId };
-                string input = txtData.Text.Trim();
-
-                if (selected.CommandId == UsbPacket.CMD_WRITE)
-                {
-                    if (!TryParseHex(input, out byte val)) return;
-                    packet.Data[0] = val;
-                    packet.DataLength = 1;
-                }
-
-                LogMessage($"----- USB Packet Sending ({selected.Name}) -----");
-                var resp = SendUsbPacket(packet); // Uses default log color here
-                if (resp != null)
-                {
-                    LogMessage(resp.ParseContent());
-                    LogMessage($"USB Timings: Send={lastUsbSendTime:F3} ms, Response={lastUsbResponseTime:F3} ms");
-                    LogMessage($"------------------------------------------------------------------------");
-                    UpdateStatus($"USB Send: {lastUsbSendTime:F1} ms | USB Response: {lastUsbResponseTime:F1} ms", Color.Blue);
-                }
-                else
-                {
-                    UpdateStatus("USB Communication error!", Color.Red);
-                }
-            }
-        }
-
-        private bool TryParseHex(string input, out byte value)
-        {
-            value = 0;
-            if (string.IsNullOrWhiteSpace(input))
-            {
-                MessageBox.Show("Hex input cannot be empty for Write command.", "Input Error",
-                           MessageBoxButtons.OK, MessageBoxIcon.Error);
-                return false;
-            }
-            if (input.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
-                input = input.Substring(2);
-            if (byte.TryParse(input, System.Globalization.NumberStyles.HexNumber,
-                               System.Globalization.CultureInfo.InvariantCulture, out value))
-                return true;
-            MessageBox.Show("Invalid hex value! Example: 0xA5 or A5", "Error",
-                            MessageBoxButtons.OK, MessageBoxIcon.Error);
-            return false;
-        }
-
+        #region Logging & Status Updates
         private void LogMessage(string message, Color? textColor = null)
         {
             if (txtLog.InvokeRequired)
             {
-                txtLog.Invoke(new Action(() =>
-                {
-                    Color defaultLogColor = txtLog.ForeColor;
-                    if (textColor.HasValue)
-                    {
-                        txtLog.SelectionColor = textColor.Value;
-                    }
-                    else
-                    {
-                        txtLog.SelectionColor = defaultLogColor;
-                    }
-                    txtLog.AppendText($"[{DateTime.Now:HH:mm:ss.fff}] {message}{Environment.NewLine}");
-                    txtLog.SelectionColor = defaultLogColor; // Reset to default for the next log
-                    txtLog.ScrollToCaret();
-                }));
+                txtLog.BeginInvoke(new Action(() => LogInternal(message, textColor)));
             }
             else
             {
-                Color defaultLogColor = txtLog.ForeColor;
-                if (textColor.HasValue)
-                {
-                    txtLog.SelectionColor = textColor.Value;
-                }
-                else
-                {
-                    txtLog.SelectionColor = defaultLogColor;
-                }
-                txtLog.AppendText($"[{DateTime.Now:HH:mm:ss.fff}] {message}{Environment.NewLine}");
-                txtLog.SelectionColor = defaultLogColor; // Reset to default for the next log
-                txtLog.ScrollToCaret();
+                LogInternal(message, textColor);
             }
         }
-
+        private void LogInternal(string message, Color? textColor)
+        {
+            if (txtLog.IsDisposed) return;
+            Color originalColor = txtLog.SelectionColor;
+            txtLog.SelectionColor = textColor ?? txtLog.ForeColor;
+            txtLog.AppendText($"[{DateTime.Now:HH:mm:ss.fff}] {message}{Environment.NewLine}");
+            txtLog.SelectionColor = originalColor;
+            if (txtLog.Lines.Length > 1000)
+            {
+                txtLog.Select(0, txtLog.GetFirstCharIndexFromLine(txtLog.Lines.Length - 800));
+                txtLog.SelectedText = "";
+            }
+            txtLog.ScrollToCaret();
+        }
 
         private void UpdateStatus(string message, Color color)
         {
             if (statusStrip1.InvokeRequired)
-                statusStrip1.Invoke(new Action<string, Color>(UpdateStatus), message, color);
+            {
+                statusStrip1.BeginInvoke(new Action(() => UpdateStatusInternal(message, color)));
+            }
             else
             {
-                toolStripStatusLabel1.Text = message;
-                toolStripStatusLabel1.ForeColor = color;
+                UpdateStatusInternal(message, color);
             }
         }
+        private void UpdateStatusInternal(string message, Color color)
+        {
+            if (toolStripStatusLabel1.IsDisposed) return;
+            toolStripStatusLabel1.Text = message;
+            toolStripStatusLabel1.ForeColor = color;
+        }
+        #endregion
     }
 
+    // CommandItem ve UsbPacket sınıfları
     public class CommandItem
     {
         public string Name { get; set; }
@@ -830,4 +1013,6 @@ namespace usb_bulk_2
         public CommandItem(string name, byte commandId) { Name = name; CommandId = commandId; }
         public override string ToString() => Name;
     }
+
+
 }

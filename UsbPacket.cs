@@ -217,8 +217,6 @@ namespace usb_bulk_2
                             sb.AppendLine($"Hex: {BitConverter.ToString(stringData).Replace("-", " ")}");
                         }
                         break;
-                        // CMD_UART_ECHO_STRING için özel bir parse logic'i UsbPacket içinde olmaz,
-                        // çünkü bu paket yapısı USB için. UART yanıtı MainForm'da işlenir.
                 }
             }
 
@@ -238,7 +236,7 @@ namespace usb_bulk_2
             Array.Copy(textBytes, Data, DataLength);
         }
 
-        public string GetDataAsText(int startIndex = 0)
+        public string GetDataAsText(int startIndex = 1)
         {
             if (DataLength <= startIndex)
                 return string.Empty;
