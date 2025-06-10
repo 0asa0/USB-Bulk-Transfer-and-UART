@@ -108,7 +108,7 @@ namespace usb_bulk_2
             }
             else
             {
-                LogMessage("UsbPacket sınıfı bulunamadı. USB Kontrol sekmesi komutları çalışmayabilir.", errorLogColor);
+                LogMessage("UsbPacket class cannot found. USB Control tab commands may not work.", errorLogColor);
             }
 
             btnSend.Click += BtnSendCustomCommand_Click;
@@ -646,7 +646,7 @@ namespace usb_bulk_2
                 if (!dataMatch)
                 {
                     // Hata durumunda her zaman log basılmalı
-                    LogMessage($"USB Echo Mismatch: Sent=\"{echoDataStr}\" | Recv=\"{receivedEchoStr}\"", errorLogColor);
+                    LogMessage($"USB BULK Echo Mismatch: Sent=\"{echoDataStr}\" | Recv=\"{receivedEchoStr}\"", errorLogColor);
                 }
                 else if (usbEchoPacketCount % 10 == 0 || usbEchoPacketCount == 1)
                 {
@@ -654,15 +654,15 @@ namespace usb_bulk_2
                     int dataBytesLen = packet.ToByteArray().Length;
                     double sendMbps = dataBytesLen * 8.0 / (lastUsbSendTime / 1000.0) / 1000000.0;
 
-                    LogMessage($"Echo #{usbEchoPacketCount} [USB] TX: {dataBytesLen} bytes in {lastUsbSendTime:F2}ms ({sendMbps:F2} Mbps)", usbEchoLogColor);
+                    LogMessage($"BULK Echo #{usbEchoPacketCount} [USB] TX: {dataBytesLen} bytes in {lastUsbSendTime:F2}ms ({sendMbps:F2} Mbps)", usbEchoLogColor);
 
                     int respBytesLen = resp != null ? resp.ToByteArray().Length : 0;
                     double recvMbps = respBytesLen * 8.0 / (lastUsbResponseTime / 1000.0) / 1000000.0;
 
-                    LogMessage($"Echo #{usbEchoPacketCount} [USB] RX: {respBytesLen} bytes in {lastUsbResponseTime:F2}ms ({recvMbps:F2} Mbps) - {(dataMatch ? "Match" : "Mismatch")}", usbEchoLogColor);
+                    LogMessage($"BULK Echo #{usbEchoPacketCount} [USB] RX: {respBytesLen} bytes in {lastUsbResponseTime:F2}ms ({recvMbps:F2} Mbps) - {(dataMatch ? "Match" : "Mismatch")}", usbEchoLogColor);
 
                     // İstatistikler
-                    LogMessage($"Echo #{usbEchoPacketCount} [USB] Stats:", usbEchoLogColor);
+                    LogMessage($"BULK Echo #{usbEchoPacketCount} [USB] Stats:", usbEchoLogColor);
                     LogMessage($"  TX: Avg {totalUsbSendTime / usbEchoPacketCount:F2}ms | Min {minUsbSendTime:F2}ms | Max {maxUsbSendTime:F2}ms", usbEchoLogColor);
                     LogMessage($"  RX: Avg {totalUsbResponseTime / usbEchoPacketCount:F2}ms | Min {minUsbResponseTime:F2}ms | Max {maxUsbResponseTime:F2}ms", usbEchoLogColor);
                 }
@@ -808,12 +808,11 @@ namespace usb_bulk_2
 
                     if (uartEchoPacketCount % 10 == 0 || uartEchoPacketCount == 1)
                     {
-                        // Standartlaştırılmış log formatı - USB ile aynı format
-                        LogMessage($"Echo #{uartEchoPacketCount} [UART] TX: {bytesToSend.Length} bytes in {lastUartSendTime:F2}ms ({uartSendMbps:F2} Mbps)", uartEchoLogColor);
-                        LogMessage($"Echo #{uartEchoPacketCount} [UART] RX: {bytesActuallyRead} bytes in {lastUartResponseTime:F2}ms ({uartRecvMbps:F2} Mbps) - Match", uartEchoLogColor);
+                        LogMessage($"UART Echo #{uartEchoPacketCount} [UART] TX: {bytesToSend.Length} bytes in {lastUartSendTime:F2}ms ({uartSendMbps:F2} Mbps)", uartEchoLogColor);
+                        LogMessage($"UART Echo #{uartEchoPacketCount} [UART] RX: {bytesActuallyRead} bytes in {lastUartResponseTime:F2}ms ({uartRecvMbps:F2} Mbps) - Match", uartEchoLogColor);
 
                         // İstatistikler
-                        LogMessage($"Echo #{uartEchoPacketCount} [UART] Stats:", uartEchoLogColor);
+                        LogMessage($"UART Echo #{uartEchoPacketCount} [UART] Stats:", uartEchoLogColor);
                         LogMessage($"  TX: Avg {totalUartSendTime / uartEchoPacketCount:F2}ms | Min {minUartSendTime:F2}ms | Max {maxUartSendTime:F2}ms", uartEchoLogColor);
                         LogMessage($"  RX: Avg {totalUartResponseTime / uartEchoPacketCount:F2}ms | Min {minUartResponseTime:F2}ms | Max {maxUartResponseTime:F2}ms", uartEchoLogColor);
                     }

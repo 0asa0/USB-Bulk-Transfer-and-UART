@@ -218,7 +218,7 @@ namespace usb_bulk_2
 
             if (success)
             {
-                Log($"CAN Tx: Sent ID {message.IdToHexString()}, DLC {message.Length}. Time: {sw.Elapsed.TotalMilliseconds:F2}ms", System.Drawing.Color.DarkCyan);
+                Log($"CAN Tx: Sent ID {message.IdToHexString()}, DLC {message.Length}. Time: {sw.Elapsed.TotalMilliseconds:F2}ms", System.Drawing.Color.Chocolate);
                 CanMessageReceived?.Invoke(message); // Notify UI to display the sent message
                 return true;
             }

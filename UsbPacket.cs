@@ -84,7 +84,7 @@ namespace usb_bulk_2
 
             // Paket doğrulaması yap
             if (packet[0] != PACKET_HEADER1 || packet[1] != PACKET_HEADER2)
-                throw new Exception("Geçersiz paket başlığı!");
+                throw new Exception("Invalid packet header!");
 
             result.CommandId = packet[2];
             result.DataLength = packet[3];
@@ -100,7 +100,7 @@ namespace usb_bulk_2
             ushort calculatedChecksum = CalculateCRC16(packet, 4 + result.DataLength);
 
             if (result.Checksum != calculatedChecksum)
-                throw new Exception("Checksum hatası!");
+                throw new Exception("Checksum error!");
 
             return result;
         }
@@ -156,7 +156,7 @@ namespace usb_bulk_2
         {
             switch (resultCode)
             {
-                case RESULT_OK: return "Başarılı";
+                case RESULT_OK: return "Success";
                 case RESULT_ERROR: return "Genel Hata";
                 case RESULT_INVALID_CMD: return "Geçersiz Komut";
                 case RESULT_CRC_ERROR: return "CRC Hatası";
@@ -168,11 +168,11 @@ namespace usb_bulk_2
         {
             StringBuilder sb = new StringBuilder();
 
-            sb.AppendLine($"Komut: {GetCommandName(CommandId)}");
-            sb.AppendLine($"Veri Uzunluğu: {DataLength} byte");
+            sb.AppendLine($"Command: {GetCommandName(CommandId)}");
+            sb.AppendLine($"Data Length: {DataLength} byte");
 
             byte resultCode = GetResultCode();
-            sb.AppendLine($"Sonuç: {GetResultName(resultCode)}");
+            sb.AppendLine($"Result: {GetResultName(resultCode)}");
 
             if (resultCode == RESULT_OK)
             {
@@ -180,7 +180,7 @@ namespace usb_bulk_2
                 {
                     case CMD_READ:
                         if (DataLength > 1)
-                            sb.AppendLine($"Durum: 0x{Data[1]:X2}");
+                            sb.AppendLine($"Status: 0x{Data[1]:X2}");
                         break;
 
                     case CMD_WRITE:
@@ -190,9 +190,9 @@ namespace usb_bulk_2
                     case CMD_STATUS:
                         if (DataLength > 5)
                         {
-                            sb.AppendLine($"Durum: 0x{Data[1]:X2}");
+                            sb.AppendLine($"Status: 0x{Data[1]:X2}");
                             uint packetCount = (uint)(Data[2] | (Data[3] << 8) | (Data[4] << 16) | (Data[5] << 24));
-                            sb.AppendLine($"Paket Sayacı: {packetCount:N0}");
+                            sb.AppendLine($"Packet Counter: {packetCount:N0}");
                         }
                         break;
 
@@ -203,7 +203,7 @@ namespace usb_bulk_2
                     case CMD_VERSION:
                         if (DataLength > 3)
                         {
-                            sb.AppendLine($"Versiyon: v{Data[1]}.{Data[2]}.{Data[3]}");
+                            sb.AppendLine($"Version: v{Data[1]}.{Data[2]}.{Data[3]}");
                         }
                         break;
 

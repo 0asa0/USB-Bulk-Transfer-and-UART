@@ -25,7 +25,7 @@ namespace usb_bulk_2
             }
         }
 
-        // PSoC'tan gelen 18 byte'lık ham veriden CanMessage oluşturur
+        // PSoC'tan gelen 18 byte'lık ham veriden CanMessage oluştur
         public static CanMessage FromPSoCByteArray(byte[] rawData, ulong sequenceNumber, string direction)
         {
             if (rawData == null || rawData.Length < 18)

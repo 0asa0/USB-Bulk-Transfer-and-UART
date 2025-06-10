@@ -91,7 +91,7 @@ namespace usb_bulk_2
             // 
             this.toolStripStatusLabel1.Name = "toolStripStatusLabel1";
             this.toolStripStatusLabel1.Size = new System.Drawing.Size(129, 17);
-            this.toolStripStatusLabel1.Text = "Uygulama başlatılıyor...";
+            this.toolStripStatusLabel1.Text = "Starting the application...";
             // 
             // tabControlMain
             // 
@@ -112,7 +112,7 @@ namespace usb_bulk_2
             this.tabPageUsbControl.Padding = new System.Windows.Forms.Padding(3);
             this.tabPageUsbControl.Size = new System.Drawing.Size(776, 324); // Adjusted
             this.tabPageUsbControl.TabIndex = 0;
-            this.tabPageUsbControl.Text = "USB Kontrol";
+            this.tabPageUsbControl.Text = "USB Control";
             this.tabPageUsbControl.UseVisualStyleBackColor = true;
             // 
             // panelUsbControl
@@ -135,7 +135,7 @@ namespace usb_bulk_2
             this.btnSend.Name = "btnSend";
             this.btnSend.Size = new System.Drawing.Size(75, 58);
             this.btnSend.TabIndex = 4;
-            this.btnSend.Text = "Gönder";
+            this.btnSend.Text = "Send";
             this.btnSend.UseVisualStyleBackColor = true;
             // 
             // txtData
@@ -154,7 +154,7 @@ namespace usb_bulk_2
             this.labelData.Name = "labelData";
             this.labelData.Size = new System.Drawing.Size(29, 13);
             this.labelData.TabIndex = 2;
-            this.labelData.Text = "Veri:";
+            this.labelData.Text = "Data:";
             // 
             // cmbCommands
             // 
@@ -174,7 +174,7 @@ namespace usb_bulk_2
             this.labelCommand.Name = "labelCommand";
             this.labelCommand.Size = new System.Drawing.Size(43, 13);
             this.labelCommand.TabIndex = 0;
-            this.labelCommand.Text = "Komut:";
+            this.labelCommand.Text = "Command:";
             // 
             // tabPageCanInterface
             // 
@@ -184,7 +184,7 @@ namespace usb_bulk_2
             this.tabPageCanInterface.Padding = new System.Windows.Forms.Padding(3);
             this.tabPageCanInterface.Size = new System.Drawing.Size(776, 324); // Adjusted
             this.tabPageCanInterface.TabIndex = 1;
-            this.tabPageCanInterface.Text = "CAN Arayüzü";
+            this.tabPageCanInterface.Text = "CAN Interface";
             this.tabPageCanInterface.UseVisualStyleBackColor = true;
             // 
             // splitContainerCan
@@ -322,7 +322,7 @@ namespace usb_bulk_2
             this.txtCanTransmitData.Name = "txtCanTransmitData";
             this.txtCanTransmitData.Size = new System.Drawing.Size(550, 20); // Adjusted
             this.txtCanTransmitData.TabIndex = 5;
-            this.txtCanTransmitData.Text = "00 11 22 33 44 55 66 77";
+            this.txtCanTransmitData.Text = "AA 11 22 33 44 55 66 77";
             //
             // btnSendCanMessage
             //
@@ -331,7 +331,7 @@ namespace usb_bulk_2
             this.btnSendCanMessage.Name = "btnSendCanMessage";
             this.btnSendCanMessage.Size = new System.Drawing.Size(75, 46);
             this.btnSendCanMessage.TabIndex = 6;
-            this.btnSendCanMessage.Text = "Gönder";
+            this.btnSendCanMessage.Text = "Send";
             this.btnSendCanMessage.UseVisualStyleBackColor = true;
             //
             // listViewCanTransmit
@@ -408,7 +408,7 @@ namespace usb_bulk_2
             this.MinimumSize = new System.Drawing.Size(800, 600); // Adjusted
             this.Name = "MainForm";
             this.StartPosition = System.Windows.Forms.FormStartPosition.CenterScreen;
-            this.Text = "PSoC USB & CAN Test Uygulaması"; // Title updated
+            this.Text = "PSoC USB BULK & UART & CAN Test APP"; // Title updated
             this.statusStrip1.ResumeLayout(false);
             this.statusStrip1.PerformLayout();
             this.tabControlMain.ResumeLayout(false);
