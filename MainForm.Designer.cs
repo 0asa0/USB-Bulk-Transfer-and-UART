@@ -278,7 +278,7 @@ namespace usb_bulk_2
             this.txtCanTransmitId.Name = "txtCanTransmitId";
             this.txtCanTransmitId.Size = new System.Drawing.Size(100, 20);
             this.txtCanTransmitId.TabIndex = 1;
-            this.txtCanTransmitId.Text = "100";
+            this.txtCanTransmitId.Text = "123";
             //
             // chkCanExtendedId
             //
